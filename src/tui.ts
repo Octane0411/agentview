@@ -30,6 +30,7 @@ class Tui {
   lastDelete: LastDelete;
   refreshTimer: NodeJS.Timeout | null;
   originalRawMode: boolean | undefined;
+  suspended: boolean;
 
   constructor() {
     this.jobs = [];
@@ -42,24 +43,25 @@ class Tui {
     this.groupBy = "state";
     this.lastDelete = null;
     this.refreshTimer = null;
+    this.suspended = false;
   }
 
   async start() {
     this.originalRawMode = process.stdin.isRaw;
+    this.suspended = false;
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.setEncoding("utf8");
     process.stdout.write("\x1b[?25l");
     process.stdin.on("data", this.onData);
     process.on("SIGWINCH", this.onResize);
-    this.refreshTimer = setInterval(() => {
-      void this.refresh();
-    }, 1500);
+    this.startRefreshTimer();
     await this.refresh();
   }
 
   stop() {
-    if (this.refreshTimer) clearInterval(this.refreshTimer);
+    this.suspended = true;
+    this.stopRefreshTimer();
     process.stdin.off("data", this.onData);
     process.off("SIGWINCH", this.onResize);
     process.stdin.setRawMode(Boolean(this.originalRawMode));
@@ -76,6 +78,7 @@ class Tui {
   };
 
   async refresh() {
+    if (this.suspended) return;
     this.jobs = await listJobs();
     this.buildRows();
     if (this.selected >= this.rows.length) this.selected = Math.max(0, this.rows.length - 1);
@@ -209,21 +212,43 @@ class Tui {
       console.error(error instanceof Error ? error.message : String(error));
       console.error("Press Enter to return to Agent View.");
       await waitForEnter();
+    } finally {
+      this.resume();
+      await this.refresh();
     }
-    this.resume();
-    await this.refresh();
   }
 
   suspend() {
+    this.suspended = true;
+    this.stopRefreshTimer();
     process.stdin.off("data", this.onData);
+    process.off("SIGWINCH", this.onResize);
     process.stdin.setRawMode(false);
+    process.stdin.pause();
     process.stdout.write("\x1b[?25h\x1b[0m\x1b[2J\x1b[H");
   }
 
   resume() {
+    this.suspended = false;
     process.stdin.setRawMode(true);
+    process.stdin.resume();
     process.stdin.on("data", this.onData);
+    process.on("SIGWINCH", this.onResize);
+    this.startRefreshTimer();
     process.stdout.write("\x1b[?25l");
+  }
+
+  startRefreshTimer() {
+    if (this.refreshTimer) return;
+    this.refreshTimer = setInterval(() => {
+      void this.refresh();
+    }, 1500);
+  }
+
+  stopRefreshTimer() {
+    if (!this.refreshTimer) return;
+    clearInterval(this.refreshTimer);
+    this.refreshTimer = null;
   }
 
   async stopOrDelete() {
@@ -255,6 +280,7 @@ class Tui {
   }
 
   async render() {
+    if (this.suspended) return;
     const width = process.stdout.columns || 100;
     const height = process.stdout.rows || 30;
     const lines = [];
@@ -391,9 +417,11 @@ function waitForEnter(): Promise<void> {
     const onData = (chunk: Buffer | string) => {
       if (chunk.toString("utf8").includes("\n") || chunk.toString("utf8").includes("\r")) {
         process.stdin.off("data", onData);
+        process.stdin.pause();
         resolve(undefined);
       }
     };
+    process.stdin.resume();
     process.stdin.on("data", onData);
   });
 }
