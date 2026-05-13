@@ -73,7 +73,7 @@ Codex owns the conversation transcript and resume state. Agent View stores only 
 
 - This MVP does not use `codex app-server` yet.
 - Attach is implemented by suspending Agent View and running `codex resume <thread_id>`.
-- Approval handling is detected from JSON events, but full in-panel approval routing requires the app-server backend.
+- Approval handling is detected from JSON events, but live replies to an active `codex exec` turn require the app-server backend. The CLI fallback can resume a completed thread with `reply`/`respawn`.
 - The supervisor is implemented as detached per-job worker processes rather than a persistent daemon.
 
 ## Development
@@ -83,6 +83,14 @@ Run tests:
 ```bash
 npm test
 ```
+
+Run the opt-in real Codex E2E chain:
+
+```bash
+AGENTVIEW_REAL_CODEX_E2E=1 npm run test:e2e:real
+```
+
+This creates a temporary git repo and isolated `AGENTVIEW_HOME`, dispatches a real Codex job, verifies `list`/`peek`/`logs`, resumes the same Codex session, smoke-tests TUI/attach with `expect` when available, and checks that edits stay inside the Agent View worktree.
 
 Build the CLI:
 

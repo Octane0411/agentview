@@ -40,7 +40,7 @@ if (args[0] === "exec") {
   process.exit(0);
 }
 if (args[0] === "resume") {
-  console.log("resumed " + args[1]);
+  console.log("resumed " + args[args.length - 1]);
   process.exit(0);
 }
 process.exit(2);
@@ -117,7 +117,7 @@ process.exit(2);
     const calls = await readFile(callsFile, "utf8");
     assert.match(calls, /exec --json/);
     assert.match(calls, new RegExp(`--cd ${escapeRegExp(job.worktreePath)}`));
-    assert.match(calls, /resume 123e4567/);
+    assert.match(calls, /resume --include-non-interactive --cd .* --sandbox workspace-write 123e4567/);
   } finally {
     process.env.AGENTVIEW_HOME = previousHome;
     await rm(root, { recursive: true, force: true });
@@ -177,7 +177,7 @@ process.exit(2);
   }
 });
 
-test("CLI reply can feed a live needs_input worker", async () => {
+test("CLI reply resumes a completed Codex thread", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agentview-cli-reply-"));
   const home = path.join(root, "home");
   const bin = path.join(root, "bin");
@@ -190,15 +190,17 @@ test("CLI reply can feed a live needs_input worker", async () => {
     fakeCodex,
     `#!/usr/bin/env node
 const args = process.argv.slice(2);
+if (args[0] === "exec" && args[1] === "resume") {
+  const threadId = "123e4567-e89b-12d3-a456-426614174000";
+  console.log(JSON.stringify({ method: "thread/started", params: { threadId } }));
+  console.log(JSON.stringify({ method: "item/agentMessage/delta", params: { threadId, delta: "resume received " + args[args.length - 1] } }));
+  process.exit(0);
+}
 if (args[0] === "exec") {
   const threadId = "123e4567-e89b-12d3-a456-426614174000";
-  console.log(JSON.stringify({ method: "item/tool/requestUserInput", params: { threadId, message: "Approve?" } }));
-  process.stdin.setEncoding("utf8");
-  process.stdin.on("data", (chunk) => {
-    console.log(JSON.stringify({ method: "item/agentMessage/delta", params: { threadId, delta: "received " + chunk.trim() } }));
-    process.exit(0);
-  });
-  setTimeout(() => process.exit(9), 5000);
+  console.log(JSON.stringify({ method: "thread/started", params: { threadId } }));
+  console.log(JSON.stringify({ method: "item/agentMessage/delta", params: { threadId, delta: "initial complete" } }));
+  process.exit(0);
   return;
 }
 process.exit(2);
@@ -225,14 +227,14 @@ process.exit(2);
 
     await waitFor(async () => {
       const store = await loadStore();
-      return store.jobs[jobId]?.status === "needs_input";
+      return store.jobs[jobId]?.status === "completed";
     });
 
-    const reply = await execFileAsync(process.execPath, ["dist/bin/agentview.js", "approve", jobId], {
+    const reply = await execFileAsync(process.execPath, ["dist/bin/agentview.js", "reply", jobId, "follow up"], {
       cwd: process.cwd(),
       env,
     });
-    assert.match(reply.stdout, /approved/);
+    assert.match(reply.stdout, /reply sent/);
 
     await waitFor(async () => {
       const store = await loadStore();
@@ -240,7 +242,7 @@ process.exit(2);
     });
 
     const store = await loadStore();
-    assert.match(store.jobs[jobId].lastSummary, /received approved/);
+    assert.match(store.jobs[jobId].lastSummary, /resume received follow up/);
   } finally {
     process.env.AGENTVIEW_HOME = previousHome;
     await rm(root, { recursive: true, force: true });

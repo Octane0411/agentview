@@ -10,6 +10,7 @@
     "build": "tsc && chmod +x dist/bin/agentview.js",
     "start": "node ./dist/bin/agentview.js",
     "test": "npm run build && node --test",
+    "test:e2e:real": "npm run build && node ./dist/scripts/e2e-real-codex.js",
     "prepare": "npm run build"
   },
   "engines": {

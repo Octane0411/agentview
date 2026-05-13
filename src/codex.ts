@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   commandExists,
   eventFailed,
@@ -19,12 +18,10 @@ import {
 import {
   appendJobEvent,
   getJob,
-  getJobInboxPath,
   getJobEventsPath,
   updateJob,
   writeJobLast,
 } from "./store.js";
-import { InboxMessageSchema } from "./schema.js";
 import type { Job } from "./schema.js";
 
 export async function assertCodexAvailable() {
@@ -44,13 +41,16 @@ export function buildCodexExecArgs(job: Job, prompt: string, options: { resume?:
   }
   const args = ["exec", "--json", "--cd", job.cwd, "--sandbox", job.sandbox || "workspace-write"];
   if (job.model) args.push("--model", job.model);
+  if (job.profile) args.push("--profile", job.profile);
   if (!job.worktreePath) args.push("--skip-git-repo-check");
   args.push(prompt);
   return args;
 }
 
 export function buildCodexResumeArgs(job: Job): string[] {
-  const args = ["resume"];
+  const args = ["resume", "--include-non-interactive", "--cd", job.cwd, "--sandbox", job.sandbox || "workspace-write"];
+  if (job.model) args.push("--model", job.model);
+  if (job.profile) args.push("--profile", job.profile);
   if (job.codexThreadId) args.push(job.codexThreadId);
   return args;
 }
@@ -74,7 +74,7 @@ export async function runCodexTurn(jobId: string, prompt: string, options: { res
   const child = spawn("codex", args, {
     cwd: job.cwd,
     env: process.env,
-    stdio: ["pipe", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
   });
 
   await updateJob(jobId, () => ({
@@ -86,7 +86,6 @@ export async function runCodexTurn(jobId: string, prompt: string, options: { res
   let stdoutBuffer = "";
   let stderrBuffer = "";
   let eventQueue = Promise.resolve();
-  const stopInboxPump = pumpInboxToStdin(jobId, child);
 
   const enqueueLine = (line: string) => {
     eventQueue = eventQueue.then(() => handleCodexLine(jobId, line));
@@ -127,7 +126,6 @@ export async function runCodexTurn(jobId: string, prompt: string, options: { res
     });
     child.on("close", (code) => resolve(code ?? 0));
   });
-  stopInboxPump();
 
   if (stdoutBuffer.trim()) enqueueLine(stdoutBuffer);
   await eventQueue;
@@ -154,48 +152,6 @@ export async function runCodexTurn(jobId: string, prompt: string, options: { res
     lastOutput: finalOutput,
     blockingRequest: null,
   }));
-}
-
-function pumpInboxToStdin(jobId: string, child: ChildProcessWithoutNullStreams): () => void {
-  const inboxPath = getJobInboxPath(jobId);
-  let offset = 0;
-  let stopped = false;
-  const timer = setInterval(async () => {
-    if (stopped || child.stdin.destroyed || child.exitCode !== null) return;
-    try {
-      const content = await readFile(inboxPath, "utf8");
-      if (content.length <= offset) return;
-      const next = content.slice(offset);
-      offset = content.length;
-      for (const line of next.split(/\r?\n/).filter(Boolean)) {
-        let message;
-        try {
-          message = InboxMessageSchema.parse(JSON.parse(line));
-        } catch {
-          continue;
-        }
-        if (message.type === "reply" && message.prompt) {
-          child.stdin.write(`${message.prompt}\n`);
-          await appendJobEvent(jobId, {
-            type: "agentview_reply_sent",
-            prompt: message.prompt,
-            timestamp: new Date().toISOString(),
-          });
-        }
-      }
-    } catch {
-      // The inbox file is created lazily on first reply.
-    }
-  }, 200);
-  return () => {
-    stopped = true;
-    clearInterval(timer);
-    try {
-      child.stdin.end();
-    } catch {
-      // ignore
-    }
-  };
 }
 
 export async function handleCodexLine(jobId: string, rawLine: string): Promise<void> {

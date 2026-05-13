@@ -37,6 +37,10 @@ test("event helpers extract thread id, summary, input requests, and PR refs", ()
     },
   };
   assert.equal(extractThreadId(event), "123e4567-e89b-12d3-a456-426614174000");
+  assert.equal(
+    extractThreadId({ type: "thread.started", thread_id: "019e21d5-4369-7010-b2f7-fcc3b2b66ca9" }),
+    "019e21d5-4369-7010-b2f7-fcc3b2b66ca9",
+  );
   assert.equal(eventNeedsInput(event), true);
   assert.equal(summarizeEvent(event), "Approve migration?");
   assert.deepEqual(extractPrRefs(JSON.stringify(event)), [

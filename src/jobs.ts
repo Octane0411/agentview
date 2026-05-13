@@ -3,7 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   appendJobEvent,
-  appendJobInbox,
   getJob,
   putJob,
   removeJobFiles,
@@ -106,13 +105,9 @@ export async function dispatchJob(prompt: string, options: DispatchOptions = {})
 export async function replyToJob(jobId: string, prompt: string): Promise<number | null> {
   const job = await requireJob(jobId);
   if (job.processState === "alive" && job.pid) {
-    await appendJobInbox(jobId, { type: "reply", prompt });
-    await updateJob(jobId, () => ({
-      lastSummary: "reply queued",
-      blockingRequest: null,
-      status: "working",
-    }));
-    return job.pid;
+    throw new Error(
+      "Live replies to a running Codex exec session require the app-server backend. Wait for this turn to finish, or stop it and resume.",
+    );
   }
   if (!job.codexThreadId) throw new Error(`Job ${jobId} has no Codex thread id yet`);
   const child = spawn(process.execPath, [binPath, "__worker", jobId, "reply", prompt], {
