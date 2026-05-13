@@ -74,7 +74,7 @@ Completed
 
 > investigate the flaky billing test
 
-Enter attach/dispatch  Space peek  Ctrl+S group  Ctrl+T pin  Ctrl+X stop  ? help
+Enter attach/dispatch  Space peek  Ctrl+S group  Ctrl+T pin  Ctrl+X delete  ? help
 ```
 
 ## 4. Architecture
@@ -420,12 +420,15 @@ Completed rows:
 - Failed rows remain visible.
 - Rows with open PR refs remain visible.
 
-## 14. Stop, Delete, and Archive
+## 14. Delete, Stop, and Archive
+
+Visible UI behavior should present `Ctrl+X` as the row delete/remove shortcut, matching the Claude Agent View footer. Lifecycle behavior still needs a stop phase for active jobs so a running session is not removed without first being stopped.
 
 `Ctrl+X` behavior:
 
-1. First press stops the selected job.
-2. Second press within two seconds deletes the job after confirmation.
+1. For a live job, first press stops the selected job.
+2. For a stopped, completed, or failed job, `Ctrl+X` opens delete confirmation.
+3. Pressing `Ctrl+X` again within the confirmation window deletes the job.
 
 Delete behavior:
 
@@ -483,7 +486,7 @@ MVP requirement:
 | `Ctrl+T` | Pin or unpin selected session. |
 | `Ctrl+R` | Rename selected session. |
 | `Ctrl+G` | Open dispatch prompt in `$EDITOR`. |
-| `Ctrl+X` | Stop session, then delete on second press. |
+| `Ctrl+X` | Delete/remove selected session; live jobs are stopped before deletion. |
 | `Shift+Up` / `Shift+Down` | Reorder selected session. |
 | `Esc` | Close peek panel, clear input, or exit. |
 | `Ctrl+C` | Clear input, interrupt attached turn, or exit on second press. |
