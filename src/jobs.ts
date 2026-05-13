@@ -14,23 +14,37 @@ import {
   commandExists,
   extractPrRefs,
   makeJobId,
-  mergePrRefs,
   nowIso,
   titleFromPrompt,
 } from "./util.js";
+import type { Job } from "./schema.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(currentFile), "..");
 const binPath = path.join(repoRoot, "bin", "agentview.js");
 
-export async function dispatchJob(prompt, options = {}) {
+type DispatchOptions = {
+  cwd?: string;
+  title?: string;
+  model?: string;
+  profile?: string;
+  approvalPolicy?: Job["approvalPolicy"];
+  sandbox?: Job["sandbox"];
+};
+
+type RemoveOptions = {
+  force?: boolean;
+  purge?: boolean;
+};
+
+export async function dispatchJob(prompt: string, options: DispatchOptions = {}): Promise<Job> {
   const cwd = path.resolve(options.cwd || process.cwd());
   const parsed = parseDispatchPrompt(prompt, cwd);
   const title = options.title || titleFromPrompt(parsed.prompt);
   const jobId = makeJobId();
   const worktree = await createWorktree({ cwd: parsed.cwd, jobId, title });
   const now = nowIso();
-  const job = {
+  const job: Job = {
     id: jobId,
     provider: "codex",
     codexThreadId: null,
@@ -81,15 +95,15 @@ export async function dispatchJob(prompt, options = {}) {
   child.unref();
 
   await updateJob(jobId, () => ({
-    pid: child.pid,
+    pid: child.pid ?? null,
     processState: "alive",
     lastSummary: worktree.warning || "starting Codex",
   }));
 
-  return { ...job, pid: child.pid, processState: "alive" };
+  return { ...job, pid: child.pid ?? null, processState: "alive" };
 }
 
-export async function replyToJob(jobId, prompt) {
+export async function replyToJob(jobId: string, prompt: string): Promise<number | null> {
   const job = await requireJob(jobId);
   if (job.processState === "alive" && job.pid) {
     await appendJobInbox(jobId, { type: "reply", prompt });
@@ -117,10 +131,10 @@ export async function replyToJob(jobId, prompt) {
     lastSummary: "reply sent",
     blockingRequest: null,
   }));
-  return child.pid;
+  return child.pid ?? null;
 }
 
-export async function respawnJob(jobId, prompt = "Continue the previous task.") {
+export async function respawnJob(jobId: string, prompt = "Continue the previous task."): Promise<number | null> {
   const job = await requireJob(jobId);
   if (!job.codexThreadId) throw new Error(`Job ${jobId} has no Codex thread id yet`);
   const child = spawn(process.execPath, [binPath, "__worker", jobId, "resume", prompt], {
@@ -139,10 +153,10 @@ export async function respawnJob(jobId, prompt = "Continue the previous task.") 
     lastSummary: "respawned",
     blockingRequest: null,
   }));
-  return child.pid;
+  return child.pid ?? null;
 }
 
-export async function stopJob(jobId) {
+export async function stopJob(jobId: string): Promise<void> {
   const job = await requireJob(jobId);
   if (job.pid) {
     try {
@@ -161,7 +175,7 @@ export async function stopJob(jobId) {
   }));
 }
 
-export async function removeJob(jobId, options = {}) {
+export async function removeJob(jobId: string, options: RemoveOptions = {}): Promise<void> {
   const job = await requireJob(jobId);
   if (job.pid) await stopJob(jobId);
   if (job.worktreePath && (await worktreeHasChanges(job.worktreePath)) && !options.force) {
@@ -182,35 +196,35 @@ export async function removeJob(jobId, options = {}) {
   if (options.purge) await removeJobFiles(jobId);
 }
 
-export async function archiveJob(jobId, archived = true) {
+export async function archiveJob(jobId: string, archived = true): Promise<void> {
   await requireJob(jobId);
   await updateJob(jobId, () => ({ archived }));
 }
 
-export async function renameJob(jobId, title) {
+export async function renameJob(jobId: string, title: string): Promise<void> {
   await requireJob(jobId);
   await updateJob(jobId, () => ({ title }));
 }
 
-export async function pinJob(jobId, pinned) {
+export async function pinJob(jobId: string, pinned?: boolean): Promise<void> {
   const job = await requireJob(jobId);
   await updateJob(jobId, () => ({ pinned: pinned ?? !job.pinned }));
 }
 
-export async function requireJob(jobId) {
+export async function requireJob(jobId: string): Promise<Job> {
   const job = await getJob(jobId);
   if (!job || job.deleted) throw new Error(`Unknown job: ${jobId}`);
   return job;
 }
 
-export async function doctor() {
+export async function doctor(): Promise<{ codex: boolean; node: string }> {
   return {
     codex: await commandExists("codex"),
     node: process.version,
   };
 }
 
-export function parseDispatchPrompt(input, cwd) {
+export function parseDispatchPrompt(input: string, cwd: string): { prompt: string; cwd: string; model: string | null; profile: string | null } {
   let prompt = String(input || "").trim();
   let model = null;
   let profile = null;

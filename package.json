@@ -4,15 +4,24 @@
   "description": "Local Agent View-style controller for Codex sessions",
   "type": "module",
   "bin": {
-    "agentview": "./bin/agentview.js"
+    "agentview": "./dist/bin/agentview.js"
   },
   "scripts": {
-    "start": "node ./bin/agentview.js",
-    "test": "node --test"
+    "build": "tsc && chmod +x dist/bin/agentview.js",
+    "start": "node ./dist/bin/agentview.js",
+    "test": "npm run build && node --test",
+    "prepare": "npm run build"
   },
   "engines": {
     "node": ">=22"
   },
   "license": "UNLICENSED",
-  "private": true
+  "private": true,
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.7.0",
+    "typescript": "^6.0.3"
+  }
 }

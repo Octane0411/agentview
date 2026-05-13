@@ -1,7 +1,7 @@
 import { runCodexTurn } from "./codex.js";
 import { appendJobEvent, getJob, updateJob } from "./store.js";
 
-export async function workerMain(argv) {
+export async function workerMain(argv: string[]): Promise<void> {
   const [, , , jobId, mode = "run", ...rest] = argv;
   if (!jobId) throw new Error("Worker requires a job id");
   const job = await getJob(jobId);
@@ -14,10 +14,11 @@ export async function workerMain(argv) {
   try {
     await runCodexTurn(jobId, prompt, { resume: mode !== "run" });
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     await appendJobEvent(jobId, {
       type: "worker_error",
-      error: error.message,
-      stack: error.stack,
+      error: err.message,
+      stack: err.stack,
       timestamp: new Date().toISOString(),
     });
     await updateJob(jobId, () => ({
@@ -25,8 +26,8 @@ export async function workerMain(argv) {
       processState: "exited",
       pid: null,
       activeWorkerPid: null,
-      error: error.message,
-      lastSummary: `failed: ${error.message}`,
+      error: err.message,
+      lastSummary: `failed: ${err.message}`,
       completedAt: new Date().toISOString(),
     }));
     process.exitCode = 1;

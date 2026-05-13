@@ -2,6 +2,11 @@ import { attachCodex } from "./codex.js";
 import { dispatchJob, pinJob, removeJob, renameJob, replyToJob, stopJob } from "./jobs.js";
 import { listJobs, readJobLast } from "./store.js";
 import { relativeTime, truncate } from "./util.js";
+import type { Job, JobStatus } from "./schema.js";
+
+type Row = { type: "header"; label: string } | { type: "job"; job: Job };
+type Group = { label: string; jobs: Job[] };
+type LastDelete = { jobId: string; at: number } | null;
 
 export async function runTui() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -14,6 +19,18 @@ export async function runTui() {
 }
 
 class Tui {
+  jobs: Job[];
+  rows: Row[];
+  selected: number;
+  input: string;
+  message: string;
+  peek: boolean;
+  help: boolean;
+  groupBy: "state" | "cwd";
+  lastDelete: LastDelete;
+  refreshTimer: NodeJS.Timeout | null;
+  originalRawMode: boolean | undefined;
+
   constructor() {
     this.jobs = [];
     this.rows = [];
@@ -42,7 +59,7 @@ class Tui {
   }
 
   stop() {
-    clearInterval(this.refreshTimer);
+    if (this.refreshTimer) clearInterval(this.refreshTimer);
     process.stdin.off("data", this.onData);
     process.off("SIGWINCH", this.onResize);
     process.stdin.setRawMode(Boolean(this.originalRawMode));
@@ -54,8 +71,8 @@ class Tui {
     void this.render();
   };
 
-  onData = (chunk) => {
-    void this.handleKey(chunk);
+  onData = (chunk: Buffer | string) => {
+    void this.handleKey(String(chunk));
   };
 
   async refresh() {
@@ -67,7 +84,7 @@ class Tui {
 
   buildRows() {
     const groups = this.groupBy === "cwd" ? groupJobsByCwd(this.jobs) : groupJobsByState(this.jobs);
-    const rows = [];
+    const rows: Row[] = [];
     for (const group of groups) {
       if (!group.jobs.length) continue;
       rows.push({ type: "header", label: group.label });
@@ -80,11 +97,12 @@ class Tui {
     }
   }
 
-  selectedJob() {
-    return this.rows[this.selected]?.job || null;
+  selectedJob(): Job | null {
+    const row = this.rows[this.selected];
+    return row?.type === "job" ? row.job : null;
   }
 
-  async handleKey(key) {
+  async handleKey(key: string): Promise<void> {
     if (key === "\u0003") {
       if (this.input) {
         this.input = "";
@@ -136,7 +154,7 @@ class Tui {
     }
   }
 
-  async move(delta) {
+  async move(delta: number): Promise<void> {
     if (!this.rows.length) return;
     let next = this.selected;
     do {
@@ -165,7 +183,7 @@ class Tui {
           await replyToJob(job.id, text);
           this.message = `reply sent to ${job.id}`;
         } catch (error) {
-          this.message = error.message;
+          this.message = error instanceof Error ? error.message : String(error);
         }
         return this.refresh();
       }
@@ -173,7 +191,7 @@ class Tui {
         const created = await dispatchJob(text);
         this.message = `backgrounded ${created.id}`;
       } catch (error) {
-        this.message = error.message;
+        this.message = error instanceof Error ? error.message : String(error);
       }
       return this.refresh();
     }
@@ -188,7 +206,7 @@ class Tui {
     try {
       await attachCodex(job);
     } catch (error) {
-      console.error(error.message);
+      console.error(error instanceof Error ? error.message : String(error));
       console.error("Press Enter to return to Agent View.");
       await waitForEnter();
     }
@@ -218,7 +236,7 @@ class Tui {
         await removeJob(job.id);
         this.message = `removed ${job.id}`;
       } catch (error) {
-        this.message = error.message;
+        this.message = error instanceof Error ? error.message : String(error);
       }
       this.lastDelete = null;
       return this.refresh();
@@ -277,7 +295,7 @@ class Tui {
   }
 }
 
-function groupJobsByState(jobs) {
+function groupJobsByState(jobs: Job[]): Group[] {
   const pinned = jobs.filter((job) => job.pinned);
   const rest = jobs.filter((job) => !job.pinned);
   return [
@@ -290,7 +308,7 @@ function groupJobsByState(jobs) {
   ];
 }
 
-function groupJobsByCwd(jobs) {
+function groupJobsByCwd(jobs: Job[]): Group[] {
   const byCwd = new Map();
   for (const job of jobs) {
     const key = shortCwd(job.dispatchCwd || job.cwd);
@@ -300,7 +318,7 @@ function groupJobsByCwd(jobs) {
   return [...byCwd.entries()].map(([label, grouped]) => ({ label, jobs: grouped }));
 }
 
-function renderJobRow(job, { selected, width }) {
+function renderJobRow(job: Job, { selected, width }: { selected: boolean; width: number }): string {
   const icon = statusIcon(job.status);
   const marker = selected ? "> " : "  ";
   const title = truncate(job.title, 32).padEnd(34, " ");
@@ -310,7 +328,7 @@ function renderJobRow(job, { selected, width }) {
   return selected ? `\x1b[7m${line.padEnd(width)}\x1b[0m` : line.slice(0, width);
 }
 
-async function renderPeek(job, width) {
+async function renderPeek(job: Job | null, width: number): Promise<string[]> {
   if (!job) return ["No session selected."];
   const last = await readJobLast(job.id);
   const lines = [
@@ -326,7 +344,7 @@ async function renderPeek(job, width) {
   return lines.map((line) => truncate(line, width));
 }
 
-function renderHelp(width) {
+function renderHelp(width: number): string[] {
   return [
     "".padEnd(width, "-"),
     "Shortcuts",
@@ -337,7 +355,7 @@ function renderHelp(width) {
   ].map((line) => truncate(line, width));
 }
 
-function statusIcon(status) {
+function statusIcon(status: JobStatus): string {
   switch (status) {
     case "working":
       return "*";
@@ -354,7 +372,7 @@ function statusIcon(status) {
   }
 }
 
-function countJobs(jobs) {
+function countJobs(jobs: Job[]): { needs_input: number; working: number; completed: number } {
   return {
     needs_input: jobs.filter((job) => job.status === "needs_input").length,
     working: jobs.filter((job) => job.status === "working").length,
@@ -362,18 +380,18 @@ function countJobs(jobs) {
   };
 }
 
-function shortCwd(cwd) {
+function shortCwd(cwd: string): string {
   const home = process.env.HOME;
   if (home && cwd.startsWith(home)) return `~${cwd.slice(home.length)}`;
   return cwd;
 }
 
-function waitForEnter() {
+function waitForEnter(): Promise<void> {
   return new Promise((resolve) => {
-    const onData = (chunk) => {
+    const onData = (chunk: Buffer | string) => {
       if (chunk.toString("utf8").includes("\n") || chunk.toString("utf8").includes("\r")) {
         process.stdin.off("data", onData);
-        resolve();
+        resolve(undefined);
       }
     };
     process.stdin.on("data", onData);

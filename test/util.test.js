@@ -1,15 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseFlags } from "../src/cli.js";
-import { buildCodexExecArgs } from "../src/codex.js";
-import { parseDispatchPrompt } from "../src/jobs.js";
+import { parseFlags } from "../dist/src/cli.js";
+import { buildCodexExecArgs } from "../dist/src/codex.js";
+import { parseDispatchPrompt } from "../dist/src/jobs.js";
 import {
   eventNeedsInput,
   extractPrRefs,
   extractThreadId,
   summarizeEvent,
   truncate,
-} from "../src/util.js";
+} from "../dist/src/util.js";
 
 test("parseFlags separates flags and positional arguments", () => {
   const parsed = parseFlags(["--cwd", "/tmp/repo", "--attach", "fix", "tests"], {

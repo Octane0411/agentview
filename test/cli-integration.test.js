@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { loadStore } from "../src/store.js";
-import { runCommand } from "../src/util.js";
+import { loadStore } from "../dist/src/store.js";
+import { runCommand } from "../dist/src/util.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -58,7 +58,7 @@ process.exit(2);
   };
 
   try {
-    const run = await execFileAsync(process.execPath, ["bin/agentview.js", "run", "--cwd", cwd, "fake task"], {
+    const run = await execFileAsync(process.execPath, ["dist/bin/agentview.js", "run", "--cwd", cwd, "fake task"], {
       cwd: process.cwd(),
       env,
     });
@@ -77,38 +77,38 @@ process.exit(2);
     assert.match(job.worktreePath, /\.agentview\/worktrees\/av_/);
     assert.notEqual(job.cwd, cwd);
 
-    const list = await execFileAsync(process.execPath, ["bin/agentview.js", "list"], {
+    const list = await execFileAsync(process.execPath, ["dist/bin/agentview.js", "list"], {
       cwd: process.cwd(),
       env,
     });
     assert.match(list.stdout, /completed/);
     assert.match(list.stdout, /fake task/);
 
-    const peek = await execFileAsync(process.execPath, ["bin/agentview.js", "peek", jobId], {
+    const peek = await execFileAsync(process.execPath, ["dist/bin/agentview.js", "peek", jobId], {
       cwd: process.cwd(),
       env,
     });
     assert.match(peek.stdout, /fake complete/);
 
-    const attach = await execFileAsync(process.execPath, ["bin/agentview.js", "attach", jobId], {
+    const attach = await execFileAsync(process.execPath, ["dist/bin/agentview.js", "attach", jobId], {
       cwd: process.cwd(),
       env,
     });
     assert.match(attach.stdout, /resumed 123e4567/);
 
-    const stop = await execFileAsync(process.execPath, ["bin/agentview.js", "stop", jobId], {
+    const stop = await execFileAsync(process.execPath, ["dist/bin/agentview.js", "stop", jobId], {
       cwd: process.cwd(),
       env,
     });
     assert.match(stop.stdout, /stopped/);
 
-    const remove = await execFileAsync(process.execPath, ["bin/agentview.js", "rm", jobId], {
+    const remove = await execFileAsync(process.execPath, ["dist/bin/agentview.js", "rm", jobId], {
       cwd: process.cwd(),
       env,
     });
     assert.match(remove.stdout, /removed/);
 
-    const afterRemove = await execFileAsync(process.execPath, ["bin/agentview.js", "list"], {
+    const afterRemove = await execFileAsync(process.execPath, ["dist/bin/agentview.js", "list"], {
       cwd: process.cwd(),
       env,
     });
@@ -155,7 +155,7 @@ process.exit(2);
   };
 
   try {
-    const run = await execFileAsync(process.execPath, ["bin/agentview.js", "run", "--cwd", cwd, "failing task"], {
+    const run = await execFileAsync(process.execPath, ["dist/bin/agentview.js", "run", "--cwd", cwd, "failing task"], {
       cwd: process.cwd(),
       env,
     });
@@ -216,7 +216,7 @@ process.exit(2);
   };
 
   try {
-    const run = await execFileAsync(process.execPath, ["bin/agentview.js", "run", "--cwd", cwd, "blocked task"], {
+    const run = await execFileAsync(process.execPath, ["dist/bin/agentview.js", "run", "--cwd", cwd, "blocked task"], {
       cwd: process.cwd(),
       env,
     });
@@ -228,7 +228,7 @@ process.exit(2);
       return store.jobs[jobId]?.status === "needs_input";
     });
 
-    const reply = await execFileAsync(process.execPath, ["bin/agentview.js", "approve", jobId], {
+    const reply = await execFileAsync(process.execPath, ["dist/bin/agentview.js", "approve", jobId], {
       cwd: process.cwd(),
       env,
     });

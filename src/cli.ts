@@ -17,8 +17,9 @@ import { listJobs, readJobLast } from "./store.js";
 import { runTui } from "./tui.js";
 import { relativeTime, truncate } from "./util.js";
 import { workerMain } from "./worker.js";
+import type { Job, JobStatus } from "./schema.js";
 
-export async function main(argv) {
+export async function main(argv: string[]): Promise<void> {
   const args = argv.slice(2);
   const command = args[0];
 
@@ -38,7 +39,7 @@ export async function main(argv) {
   }
 
   if (command === "--version" || command === "-v") {
-    const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+    const pkg = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
     console.log(pkg.version);
     return;
   }
@@ -105,7 +106,7 @@ export async function main(argv) {
   }
 }
 
-async function cmdRun(args) {
+async function cmdRun(args: string[]): Promise<void> {
   const { flags, positional } = parseFlags(args, {
     boolean: ["attach"],
     string: ["cwd", "model", "sandbox"],
@@ -113,27 +114,27 @@ async function cmdRun(args) {
   const prompt = positional.join(" ").trim();
   if (!prompt) throw new Error("Usage: agentview run [--cwd DIR] [--model MODEL] [--attach] \"task\"");
   const job = await dispatchJob(prompt, {
-    cwd: flags.cwd,
-    model: flags.model,
-    sandbox: flags.sandbox,
+    cwd: typeof flags.cwd === "string" ? flags.cwd : undefined,
+    model: typeof flags.model === "string" ? flags.model : undefined,
+    sandbox: typeof flags.sandbox === "string" ? flags.sandbox as Job["sandbox"] : undefined,
   });
   console.log(`backgrounded  ${job.id}`);
   console.log("  agentview                 list sessions");
   console.log(`  agentview attach ${job.id}  open in this terminal`);
   console.log(`  agentview logs ${job.id}    show recent output`);
   console.log(`  agentview stop ${job.id}    stop this session`);
-  if (flags.attach) await cmdAttach([job.id]);
+  if (Boolean(flags.attach)) await cmdAttach([job.id]);
 }
 
-async function cmdList(args) {
+async function cmdList(args: string[]): Promise<void> {
   const { flags } = parseFlags(args, { boolean: ["all"] });
-  const jobs = await listJobs({ all: flags.all });
+  const jobs = await listJobs({ all: Boolean(flags.all) });
   for (const job of jobs) {
     console.log(formatJobLine(job));
   }
 }
 
-async function cmdPeek(args) {
+async function cmdPeek(args: string[]): Promise<void> {
   const jobId = args[0];
   if (!jobId) throw new Error("Usage: agentview peek <job_id>");
   const job = await requireJob(jobId);
@@ -148,7 +149,7 @@ async function cmdPeek(args) {
   console.log(last || job.lastOutput || job.lastSummary || "(no output yet)");
 }
 
-async function cmdLogs(args) {
+async function cmdLogs(args: string[]): Promise<void> {
   const jobId = args[0];
   if (!jobId) throw new Error("Usage: agentview logs <job_id>");
   await requireJob(jobId);
@@ -156,14 +157,14 @@ async function cmdLogs(args) {
   for (const line of lines) console.log(line);
 }
 
-async function cmdAttach(args) {
+async function cmdAttach(args: string[]): Promise<void> {
   const jobId = args[0];
   if (!jobId) throw new Error("Usage: agentview attach <job_id>");
   const job = await requireJob(jobId);
   await attachCodex(job);
 }
 
-async function cmdReply(args) {
+async function cmdReply(args: string[]): Promise<void> {
   const jobId = args[0];
   const prompt = args.slice(1).join(" ").trim();
   if (!jobId || !prompt) throw new Error("Usage: agentview reply <job_id> \"message\"");
@@ -171,36 +172,36 @@ async function cmdReply(args) {
   console.log(`reply sent  ${jobId}  pid ${pid}`);
 }
 
-async function cmdDecision(args, decision) {
+async function cmdDecision(args: string[], decision: "approved" | "declined"): Promise<void> {
   const jobId = args[0];
   if (!jobId) throw new Error(`Usage: agentview ${decision === "approved" ? "approve" : "decline"} <job_id>`);
   const pid = await replyToJob(jobId, decision);
   console.log(`${decision}  ${jobId}  pid ${pid}`);
 }
 
-async function cmdStop(args) {
+async function cmdStop(args: string[]): Promise<void> {
   const jobId = args[0];
   if (!jobId) throw new Error("Usage: agentview stop <job_id>");
   await stopJob(jobId);
   console.log(`stopped ${jobId}`);
 }
 
-async function cmdRemove(args) {
+async function cmdRemove(args: string[]): Promise<void> {
   const { flags, positional } = parseFlags(args, { boolean: ["force", "purge"] });
   const jobId = positional[0];
   if (!jobId) throw new Error("Usage: agentview rm [--force] [--purge] <job_id>");
-  await removeJob(jobId, { force: flags.force, purge: flags.purge });
+  await removeJob(jobId, { force: Boolean(flags.force), purge: Boolean(flags.purge) });
   console.log(`removed ${jobId}`);
 }
 
-async function cmdArchive(args, archived) {
+async function cmdArchive(args: string[], archived: boolean): Promise<void> {
   const jobId = args[0];
   if (!jobId) throw new Error(`Usage: agentview ${archived ? "archive" : "unarchive"} <job_id>`);
   await archiveJob(jobId, archived);
   console.log(`${archived ? "archived" : "unarchived"} ${jobId}`);
 }
 
-async function cmdRename(args) {
+async function cmdRename(args: string[]): Promise<void> {
   const jobId = args[0];
   const title = args.slice(1).join(" ").trim();
   if (!jobId || !title) throw new Error("Usage: agentview rename <job_id> \"title\"");
@@ -208,14 +209,14 @@ async function cmdRename(args) {
   console.log(`renamed ${jobId}`);
 }
 
-async function cmdPin(args) {
+async function cmdPin(args: string[]): Promise<void> {
   const jobId = args[0];
   if (!jobId) throw new Error("Usage: agentview pin <job_id>");
   await pinJob(jobId);
   console.log(`toggled pin ${jobId}`);
 }
 
-async function cmdRespawn(args) {
+async function cmdRespawn(args: string[]): Promise<void> {
   const jobId = args[0];
   const prompt = args.slice(1).join(" ").trim() || "Continue the previous task.";
   if (!jobId) throw new Error("Usage: agentview respawn <job_id> [prompt]");
@@ -223,14 +224,16 @@ async function cmdRespawn(args) {
   console.log(`respawned ${jobId}  pid ${pid}`);
 }
 
-async function cmdDoctor() {
+async function cmdDoctor(): Promise<void> {
   const result = await doctor();
   console.log(`codex: ${result.codex ? "ok" : "missing"}`);
   console.log(`node: ${result.node}`);
 }
 
-export function parseFlags(args, schema = {}) {
-  const flags = {};
+type FlagSchema = { boolean?: string[]; string?: string[] };
+
+export function parseFlags(args: string[], schema: FlagSchema = {}): { flags: Record<string, string | boolean>; positional: string[] } {
+  const flags: Record<string, string | boolean> = {};
   const positional = [];
   const boolean = new Set(schema.boolean || []);
   const string = new Set(schema.string || []);
@@ -261,7 +264,7 @@ export function parseFlags(args, schema = {}) {
   return { flags, positional };
 }
 
-export function formatJobLine(job) {
+export function formatJobLine(job: Job): string {
   const icon = statusIcon(job.status);
   const time = relativeTime(job.updatedAt);
   const title = truncate(job.title, 28).padEnd(30, " ");
@@ -269,7 +272,7 @@ export function formatJobLine(job) {
   return `${icon} ${job.id.padEnd(16, " ")} ${job.status.padEnd(12, " ")} ${title} ${summary.padEnd(74, " ")} ${time}`;
 }
 
-export function statusIcon(status) {
+export function statusIcon(status: JobStatus): string {
   switch (status) {
     case "working":
       return "*";
@@ -312,7 +315,7 @@ Options for run:
 `);
 }
 
-export function spawnInteractive(command, args, options = {}) {
+export function spawnInteractive(command: string, args: string[], options: { cwd?: string } = {}): Promise<number> {
   const child = spawn(command, args, {
     cwd: options.cwd,
     stdio: "inherit",

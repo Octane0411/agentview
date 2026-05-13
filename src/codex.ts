@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   commandExists,
   eventFailed,
@@ -23,6 +24,8 @@ import {
   updateJob,
   writeJobLast,
 } from "./store.js";
+import { InboxMessageSchema } from "./schema.js";
+import type { Job } from "./schema.js";
 
 export async function assertCodexAvailable() {
   if (!(await commandExists("codex"))) {
@@ -30,7 +33,7 @@ export async function assertCodexAvailable() {
   }
 }
 
-export function buildCodexExecArgs(job, prompt, options = {}) {
+export function buildCodexExecArgs(job: Job, prompt: string, options: { resume?: boolean } = {}): string[] {
   if (options.resume) {
     const args = ["exec", "resume", "--json"];
     if (job.model) args.push("--model", job.model);
@@ -46,13 +49,13 @@ export function buildCodexExecArgs(job, prompt, options = {}) {
   return args;
 }
 
-export function buildCodexResumeArgs(job) {
+export function buildCodexResumeArgs(job: Job): string[] {
   const args = ["resume"];
   if (job.codexThreadId) args.push(job.codexThreadId);
   return args;
 }
 
-export async function runCodexTurn(jobId, prompt, options = {}) {
+export async function runCodexTurn(jobId: string, prompt: string, options: { resume?: boolean } = {}): Promise<void> {
   await assertCodexAvailable();
   const job = await getJob(jobId);
   if (!job) throw new Error(`Unknown job: ${jobId}`);
@@ -85,7 +88,7 @@ export async function runCodexTurn(jobId, prompt, options = {}) {
   let eventQueue = Promise.resolve();
   const stopInboxPump = pumpInboxToStdin(jobId, child);
 
-  const enqueueLine = (line) => {
+  const enqueueLine = (line: string) => {
     eventQueue = eventQueue.then(() => handleCodexLine(jobId, line));
     return eventQueue;
   };
@@ -113,7 +116,7 @@ export async function runCodexTurn(jobId, prompt, options = {}) {
     }));
   });
 
-  const exitCode = await new Promise((resolve) => {
+  const exitCode = await new Promise<number>((resolve) => {
     child.on("error", async (error) => {
       await appendJobEvent(jobId, {
         type: "process_error",
@@ -153,7 +156,7 @@ export async function runCodexTurn(jobId, prompt, options = {}) {
   }));
 }
 
-function pumpInboxToStdin(jobId, child) {
+function pumpInboxToStdin(jobId: string, child: ChildProcessWithoutNullStreams): () => void {
   const inboxPath = getJobInboxPath(jobId);
   let offset = 0;
   let stopped = false;
@@ -167,7 +170,7 @@ function pumpInboxToStdin(jobId, child) {
       for (const line of next.split(/\r?\n/).filter(Boolean)) {
         let message;
         try {
-          message = JSON.parse(line);
+          message = InboxMessageSchema.parse(JSON.parse(line));
         } catch {
           continue;
         }
@@ -195,7 +198,7 @@ function pumpInboxToStdin(jobId, child) {
   };
 }
 
-export async function handleCodexLine(jobId, rawLine) {
+export async function handleCodexLine(jobId: string, rawLine: string): Promise<void> {
   const line = rawLine.trim();
   if (!line) return;
   let event;
@@ -231,7 +234,7 @@ export async function handleCodexLine(jobId, rawLine) {
   if (summary) await writeJobLast(jobId, summary);
 }
 
-export async function discoverCodexThreadId(jobId) {
+export async function discoverCodexThreadId(jobId: string): Promise<string | null> {
   const job = await getJob(jobId);
   if (!job) return null;
   if (job.codexThreadId) return job.codexThreadId;
@@ -245,7 +248,7 @@ export async function discoverCodexThreadId(jobId) {
   return findRecentCodexSessionId(job);
 }
 
-export async function findRecentCodexSessionId(job) {
+export async function findRecentCodexSessionId(job: Job): Promise<string | null> {
   const indexPath = resolveHome(".codex/session_index.jsonl");
   if (!(await pathExists(indexPath))) return null;
   const content = await readFile(indexPath, "utf8");
@@ -268,7 +271,7 @@ export async function findRecentCodexSessionId(job) {
   return candidates.at(-1) || null;
 }
 
-export async function attachCodex(job) {
+export async function attachCodex(job: Job): Promise<number> {
   await assertCodexAvailable();
   if (!job.codexThreadId) {
     throw new Error(`Job ${job.id} does not have a Codex thread id yet. Try again after the first Codex event arrives.`);
@@ -284,14 +287,14 @@ export async function attachCodex(job) {
   });
 }
 
-export async function tailJobEvents(jobId, limit = 80) {
+export async function tailJobEvents(jobId: string, limit = 80): Promise<string[]> {
   const file = getJobEventsPath(jobId);
   if (!(await pathExists(file))) return [];
   const content = await readFile(file, "utf8");
   return content.split(/\r?\n/).filter(Boolean).slice(-limit);
 }
 
-export function cwdForDisplay(cwd) {
+export function cwdForDisplay(cwd: string): string {
   const home = process.env.HOME;
   if (home && cwd.startsWith(home)) return `~${cwd.slice(home.length)}`;
   return path.relative(process.cwd(), cwd) || cwd;

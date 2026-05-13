@@ -2,13 +2,22 @@ import path from "node:path";
 import { rm } from "node:fs/promises";
 import { runCommand, slugify, pathExists } from "./util.js";
 
-export async function findGitRoot(cwd) {
+export type WorktreeInfo = {
+  repoRoot: string;
+  cwd: string;
+  worktreePath: string | null;
+  branch: string | null;
+  isolated: boolean;
+  warning: string | null;
+};
+
+export async function findGitRoot(cwd: string): Promise<string | null> {
   const result = await runCommand("git", ["rev-parse", "--show-toplevel"], { cwd });
   if (result.code !== 0) return null;
   return result.stdout.trim() || null;
 }
 
-export async function createWorktree({ cwd, jobId, title }) {
+export async function createWorktree({ cwd, jobId, title }: { cwd: string; jobId: string; title: string }): Promise<WorktreeInfo> {
   const repoRoot = await findGitRoot(cwd);
   if (!repoRoot) {
     return {
@@ -37,14 +46,14 @@ export async function createWorktree({ cwd, jobId, title }) {
   return { repoRoot, cwd: worktreePath, worktreePath, branch, isolated: true, warning: null };
 }
 
-export async function worktreeHasChanges(worktreePath) {
+export async function worktreeHasChanges(worktreePath: string | null): Promise<boolean> {
   if (!worktreePath) return false;
   const result = await runCommand("git", ["status", "--porcelain"], { cwd: worktreePath });
   if (result.code !== 0) return true;
   return result.stdout.trim().length > 0;
 }
 
-export async function removeWorktree(worktreePath, { force = false } = {}) {
+export async function removeWorktree(worktreePath: string | null, { force = false }: { force?: boolean } = {}): Promise<void> {
   if (!worktreePath) return;
   const args = ["worktree", "remove"];
   if (force) args.push("--force");

@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createWorktree, removeWorktree, worktreeHasChanges } from "../src/worktree.js";
-import { runCommand } from "../src/util.js";
-import { putJob } from "../src/store.js";
-import { removeJob } from "../src/jobs.js";
+import { createWorktree, removeWorktree, worktreeHasChanges } from "../dist/src/worktree.js";
+import { runCommand } from "../dist/src/util.js";
+import { putJob } from "../dist/src/store.js";
+import { removeJob } from "../dist/src/jobs.js";
 
 test("createWorktree creates an isolated git worktree and detects changes", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agentview-git-"));

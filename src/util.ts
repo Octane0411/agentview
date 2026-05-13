@@ -3,6 +3,12 @@ import path from "node:path";
 import { constants } from "node:fs";
 import { spawn } from "node:child_process";
 
+export type CommandResult = {
+  code: number;
+  stdout: string;
+  stderr: string;
+};
+
 export function nowIso() {
   return new Date().toISOString();
 }
@@ -13,13 +19,13 @@ export function makeJobId() {
   return `av_${stamp}_${random}`;
 }
 
-export function truncate(value, length = 96) {
+export function truncate(value: unknown, length = 96): string {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (text.length <= length) return text;
   return `${text.slice(0, Math.max(0, length - 3)).trimEnd()}...`;
 }
 
-export function titleFromPrompt(prompt) {
+export function titleFromPrompt(prompt: unknown): string {
   const cleaned = String(prompt || "")
     .replace(/https?:\/\/\S+/g, "")
     .replace(/[#*_`>[\]()]/g, "")
@@ -28,7 +34,7 @@ export function titleFromPrompt(prompt) {
   return truncate(cleaned || "untitled task", 48);
 }
 
-export function slugify(value) {
+export function slugify(value: unknown): string {
   const slug = String(value || "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -37,7 +43,7 @@ export function slugify(value) {
   return slug || "task";
 }
 
-export function relativeTime(iso) {
+export function relativeTime(iso: string | null | undefined): string {
   if (!iso) return "";
   const diffSeconds = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
   if (diffSeconds < 60) return `${diffSeconds}s`;
@@ -48,11 +54,11 @@ export function relativeTime(iso) {
   return `${Math.floor(hours / 24)}d`;
 }
 
-export function stripAnsi(value) {
+export function stripAnsi(value: unknown): string {
   return String(value || "").replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
 }
 
-export async function pathExists(target) {
+export async function pathExists(target: string): Promise<boolean> {
   try {
     await access(target, constants.F_OK);
     return true;
@@ -61,11 +67,15 @@ export async function pathExists(target) {
   }
 }
 
-export async function ensureDir(target) {
+export async function ensureDir(target: string): Promise<void> {
   await mkdir(target, { recursive: true });
 }
 
-export function runCommand(command, args, options = {}) {
+export function runCommand(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<CommandResult> {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -89,17 +99,25 @@ export function runCommand(command, args, options = {}) {
   });
 }
 
-export async function commandExists(command) {
+export async function commandExists(command: string): Promise<boolean> {
   const result = await runCommand("sh", ["-lc", `command -v ${shellQuote(command)}`]);
   return result.code === 0;
 }
 
-export function shellQuote(value) {
+export function shellQuote(value: unknown): string {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-export function extractPrRefs(text) {
-  const refs = [];
+export type PrRef = {
+  url: string;
+  owner: string;
+  repo: string;
+  number: number;
+  status: string;
+};
+
+export function extractPrRefs(text: string): PrRef[] {
+  const refs: PrRef[] = [];
   const seen = new Set();
   const pattern = /https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)/g;
   for (const match of String(text || "").matchAll(pattern)) {
@@ -117,17 +135,17 @@ export function extractPrRefs(text) {
   return refs;
 }
 
-export function mergePrRefs(existing = [], next = []) {
-  const byUrl = new Map();
+export function mergePrRefs(existing: PrRef[] = [], next: PrRef[] = []): PrRef[] {
+  const byUrl = new Map<string, PrRef>();
   for (const ref of existing) byUrl.set(ref.url, ref);
   for (const ref of next) byUrl.set(ref.url, { ...byUrl.get(ref.url), ...ref });
   return [...byUrl.values()];
 }
 
-export function findStringByKeys(value, keys) {
+export function findStringByKeys(value: unknown, keys: string[]): string | null {
   const wanted = new Set(keys.map((key) => key.toLowerCase()));
   const visited = new Set();
-  function visit(node) {
+  function visit(node: unknown): string | null {
     if (!node || typeof node !== "object") return null;
     if (visited.has(node)) return null;
     visited.add(node);
@@ -145,11 +163,11 @@ export function findStringByKeys(value, keys) {
   return visit(value);
 }
 
-export function collectStringsByKeys(value, keys, max = 8) {
+export function collectStringsByKeys(value: unknown, keys: string[], max = 8): string[] {
   const wanted = new Set(keys.map((key) => key.toLowerCase()));
-  const result = [];
+  const result: string[] = [];
   const visited = new Set();
-  function visit(node) {
+  function visit(node: unknown): void {
     if (result.length >= max) return;
     if (!node || typeof node !== "object") return;
     if (visited.has(node)) return;
@@ -166,7 +184,7 @@ export function collectStringsByKeys(value, keys, max = 8) {
   return result;
 }
 
-export function extractThreadId(event) {
+export function extractThreadId(event: unknown): string | null {
   const direct = findStringByKeys(event, [
     "threadId",
     "thread_id",
@@ -182,11 +200,11 @@ export function extractThreadId(event) {
   return uuid?.[0] || null;
 }
 
-export function looksLikeSessionId(value) {
+export function looksLikeSessionId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
-export function summarizeEvent(event) {
+export function summarizeEvent(event: unknown): string | null {
   const method = findStringByKeys(event, ["method", "type", "event", "name"]);
   const command = findStringByKeys(event, ["command", "cmd"]);
   if (command) return truncate(`Run ${command}`, 120);
@@ -206,7 +224,7 @@ export function summarizeEvent(event) {
   return null;
 }
 
-export function eventNeedsInput(event) {
+export function eventNeedsInput(event: unknown): boolean {
   const text = JSON.stringify(event).toLowerCase();
   return (
     text.includes("requestapproval") ||
@@ -219,12 +237,12 @@ export function eventNeedsInput(event) {
   );
 }
 
-export function eventFailed(event) {
+export function eventFailed(event: unknown): boolean {
   const text = JSON.stringify(event).toLowerCase();
   return text.includes('"failed"') || text.includes('"error"');
 }
 
-export async function readJsonLines(file) {
+export async function readJsonLines(file: string): Promise<unknown[]> {
   if (!(await pathExists(file))) return [];
   const content = await readFile(file, "utf8");
   return content
@@ -240,7 +258,7 @@ export async function readJsonLines(file) {
     .filter(Boolean);
 }
 
-export async function newestMtime(paths) {
+export async function newestMtime(paths: string[]): Promise<number> {
   let latest = 0;
   for (const target of paths) {
     try {
@@ -253,6 +271,6 @@ export async function newestMtime(paths) {
   return latest;
 }
 
-export function resolveHome(relativePath) {
+export function resolveHome(relativePath: string): string {
   return path.join(process.env.HOME || process.cwd(), relativePath);
 }

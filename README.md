@@ -11,6 +11,8 @@ The current implementation is a Codex-only MVP. It uses the Codex CLI fallback p
 
 The full product spec lives in `docs/codex-agent-view-spec.md`.
 
+The implementation is TypeScript-first and uses Zod schemas for persisted job/store boundaries.
+
 ## Usage
 
 Run the TUI:
@@ -82,8 +84,14 @@ Run tests:
 npm test
 ```
 
+Build the CLI:
+
+```bash
+npm run build
+```
+
 Run without installing globally:
 
 ```bash
-node ./bin/agentview.js help
+node ./dist/bin/agentview.js help
 ```

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { handleCodexLine } from "../src/codex.js";
-import { getJob, putJob, readJobLast } from "../src/store.js";
+import { handleCodexLine } from "../dist/src/codex.js";
+import { getJob, putJob, readJobLast } from "../dist/src/store.js";
 
 function sampleJob(overrides = {}) {
   const now = new Date().toISOString();
