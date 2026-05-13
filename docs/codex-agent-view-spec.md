@@ -45,7 +45,7 @@ agentview
 
 This opens a full-screen terminal UI with:
 
-- Header: app version, default model, current dispatch directory, summary counts.
+- Header: app version, current dispatch directory, summary counts.
 - Grouped session list.
 - Peek panel, opened on demand.
 - Dispatch input at the bottom.
@@ -54,7 +54,7 @@ This opens a full-screen terminal UI with:
 Example:
 
 ```text
-Codex Agent View v0.1.0    model: gpt-5.2-codex    cwd: ~/repo    2 working, 1 needs input
+Codex Agent View v0.1.0    cwd: ~/repo    2 working, 1 needs input
 
 Pinned
   * auth refactor          Edit src/auth/session.ts                     3m
@@ -515,7 +515,7 @@ agentview/<job_id>-<slug>
 
 ## 18. Model and Permission Settings
 
-Header shows the dispatch default model.
+The session list header does not need to show the dispatch default model. Model selection is available through settings and dispatch options.
 
 Model selection:
 
