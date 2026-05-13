@@ -64,6 +64,14 @@ export async function main(argv) {
     case "reply":
       await cmdReply(rest);
       break;
+    case "approve":
+    case "accept":
+      await cmdDecision(rest, "approved");
+      break;
+    case "decline":
+    case "deny":
+      await cmdDecision(rest, "declined");
+      break;
     case "stop":
       await cmdStop(rest);
       break;
@@ -161,6 +169,13 @@ async function cmdReply(args) {
   if (!jobId || !prompt) throw new Error("Usage: agentview reply <job_id> \"message\"");
   const pid = await replyToJob(jobId, prompt);
   console.log(`reply sent  ${jobId}  pid ${pid}`);
+}
+
+async function cmdDecision(args, decision) {
+  const jobId = args[0];
+  if (!jobId) throw new Error(`Usage: agentview ${decision === "approved" ? "approve" : "decline"} <job_id>`);
+  const pid = await replyToJob(jobId, decision);
+  console.log(`${decision}  ${jobId}  pid ${pid}`);
 }
 
 async function cmdStop(args) {
@@ -282,6 +297,8 @@ Usage:
   agentview logs <job_id> [N]        Show normalized event log
   agentview attach <job_id>          Resume full Codex conversation
   agentview reply <job_id> "msg"     Send a follow-up turn
+  agentview approve <job_id>         Send an approval reply
+  agentview decline <job_id>         Send a decline reply
   agentview stop <job_id>            Stop a running job
   agentview rm [--force] <job_id>    Remove a job
   agentview archive <job_id>         Hide a job

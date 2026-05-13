@@ -18,6 +18,7 @@ import {
 import {
   appendJobEvent,
   getJob,
+  getJobInboxPath,
   getJobEventsPath,
   updateJob,
   writeJobLast,
@@ -70,7 +71,7 @@ export async function runCodexTurn(jobId, prompt, options = {}) {
   const child = spawn("codex", args, {
     cwd: job.cwd,
     env: process.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
 
   await updateJob(jobId, () => ({
@@ -82,6 +83,7 @@ export async function runCodexTurn(jobId, prompt, options = {}) {
   let stdoutBuffer = "";
   let stderrBuffer = "";
   let eventQueue = Promise.resolve();
+  const stopInboxPump = pumpInboxToStdin(jobId, child);
 
   const enqueueLine = (line) => {
     eventQueue = eventQueue.then(() => handleCodexLine(jobId, line));
@@ -122,6 +124,7 @@ export async function runCodexTurn(jobId, prompt, options = {}) {
     });
     child.on("close", (code) => resolve(code ?? 0));
   });
+  stopInboxPump();
 
   if (stdoutBuffer.trim()) enqueueLine(stdoutBuffer);
   await eventQueue;
@@ -148,6 +151,48 @@ export async function runCodexTurn(jobId, prompt, options = {}) {
     lastOutput: finalOutput,
     blockingRequest: null,
   }));
+}
+
+function pumpInboxToStdin(jobId, child) {
+  const inboxPath = getJobInboxPath(jobId);
+  let offset = 0;
+  let stopped = false;
+  const timer = setInterval(async () => {
+    if (stopped || child.stdin.destroyed || child.exitCode !== null) return;
+    try {
+      const content = await readFile(inboxPath, "utf8");
+      if (content.length <= offset) return;
+      const next = content.slice(offset);
+      offset = content.length;
+      for (const line of next.split(/\r?\n/).filter(Boolean)) {
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (message.type === "reply" && message.prompt) {
+          child.stdin.write(`${message.prompt}\n`);
+          await appendJobEvent(jobId, {
+            type: "agentview_reply_sent",
+            prompt: message.prompt,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+    } catch {
+      // The inbox file is created lazily on first reply.
+    }
+  }, 200);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+    try {
+      child.stdin.end();
+    } catch {
+      // ignore
+    }
+  };
 }
 
 export async function handleCodexLine(jobId, rawLine) {

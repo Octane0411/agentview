@@ -28,6 +28,10 @@ export function getJobLastPath(jobId) {
   return path.join(getJobDir(jobId), "last.txt");
 }
 
+export function getJobInboxPath(jobId) {
+  return path.join(getJobDir(jobId), "inbox.jsonl");
+}
+
 export async function initStore() {
   await ensureDir(getAgentviewHome());
   await ensureDir(getJobsDir());
@@ -141,6 +145,16 @@ export async function writeJobLast(jobId, text) {
 export async function readJobLast(jobId) {
   if (!(await pathExists(getJobLastPath(jobId)))) return "";
   return readFile(getJobLastPath(jobId), "utf8");
+}
+
+export async function appendJobInbox(jobId, message) {
+  await ensureDir(getJobDir(jobId));
+  const handle = await open(getJobInboxPath(jobId), "a");
+  try {
+    await handle.write(`${JSON.stringify({ ...message, timestamp: nowIso() })}\n`);
+  } finally {
+    await handle.close();
+  }
 }
 
 export async function removeJobFiles(jobId) {

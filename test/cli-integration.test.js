@@ -177,6 +177,76 @@ process.exit(2);
   }
 });
 
+test("CLI reply can feed a live needs_input worker", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agentview-cli-reply-"));
+  const home = path.join(root, "home");
+  const bin = path.join(root, "bin");
+  const cwd = path.join(root, "repo");
+  await mkdir(bin, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+
+  const fakeCodex = path.join(bin, "codex");
+  await writeFile(
+    fakeCodex,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "exec") {
+  const threadId = "123e4567-e89b-12d3-a456-426614174000";
+  console.log(JSON.stringify({ method: "item/tool/requestUserInput", params: { threadId, message: "Approve?" } }));
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    console.log(JSON.stringify({ method: "item/agentMessage/delta", params: { threadId, delta: "received " + chunk.trim() } }));
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(9), 5000);
+  return;
+}
+process.exit(2);
+`,
+    "utf8",
+  );
+  await chmod(fakeCodex, 0o755);
+
+  const previousHome = process.env.AGENTVIEW_HOME;
+  process.env.AGENTVIEW_HOME = home;
+  const env = {
+    ...process.env,
+    AGENTVIEW_HOME: home,
+    PATH: `${bin}:${process.env.PATH}`,
+  };
+
+  try {
+    const run = await execFileAsync(process.execPath, ["bin/agentview.js", "run", "--cwd", cwd, "blocked task"], {
+      cwd: process.cwd(),
+      env,
+    });
+    const jobId = run.stdout.match(/backgrounded\s+(av_[^\s]+)/)?.[1];
+    assert.ok(jobId);
+
+    await waitFor(async () => {
+      const store = await loadStore();
+      return store.jobs[jobId]?.status === "needs_input";
+    });
+
+    const reply = await execFileAsync(process.execPath, ["bin/agentview.js", "approve", jobId], {
+      cwd: process.cwd(),
+      env,
+    });
+    assert.match(reply.stdout, /approved/);
+
+    await waitFor(async () => {
+      const store = await loadStore();
+      return store.jobs[jobId]?.status === "completed";
+    });
+
+    const store = await loadStore();
+    assert.match(store.jobs[jobId].lastSummary, /received approved/);
+  } finally {
+    process.env.AGENTVIEW_HOME = previousHome;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 async function waitFor(predicate) {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {

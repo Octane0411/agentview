@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   appendJobEvent,
+  appendJobInbox,
   getJob,
   putJob,
   removeJobFiles,
@@ -90,10 +91,16 @@ export async function dispatchJob(prompt, options = {}) {
 
 export async function replyToJob(jobId, prompt) {
   const job = await requireJob(jobId);
-  if (!job.codexThreadId) throw new Error(`Job ${jobId} has no Codex thread id yet`);
   if (job.processState === "alive" && job.pid) {
-    throw new Error(`Job ${jobId} is already running; wait for it to complete or stop it first`);
+    await appendJobInbox(jobId, { type: "reply", prompt });
+    await updateJob(jobId, () => ({
+      lastSummary: "reply queued",
+      blockingRequest: null,
+      status: "working",
+    }));
+    return job.pid;
   }
+  if (!job.codexThreadId) throw new Error(`Job ${jobId} has no Codex thread id yet`);
   const child = spawn(process.execPath, [binPath, "__worker", jobId, "reply", prompt], {
     cwd: job.cwd,
     detached: true,

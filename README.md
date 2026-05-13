@@ -34,6 +34,8 @@ agentview peek <job_id>
 agentview logs <job_id>
 agentview attach <job_id>
 agentview reply <job_id> "continue and run tests"
+agentview approve <job_id>
+agentview decline <job_id>
 agentview stop <job_id>
 agentview rm <job_id>
 ```
