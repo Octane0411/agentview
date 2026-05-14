@@ -1,6 +1,7 @@
 use agentview_core::codex::attach_codex;
 use agentview_core::jobs::{
-    DispatchOptions, dispatch_job, pin_job, remove_job, rename_job, reply_to_job, stop_job,
+    DispatchOptions, dispatch_job, pin_job, remove_job, rename_job, reorder_jobs, reply_to_job,
+    stop_job,
 };
 use agentview_core::schema::{Job, JobStatus};
 use agentview_core::store::{
@@ -309,6 +310,16 @@ impl App {
                 }
             }
             KeyEvent {
+                code: KeyCode::Up,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SHIFT) => self.move_selected_job(-1)?,
+            KeyEvent {
+                code: KeyCode::Down,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SHIFT) => self.move_selected_job(1)?,
+            KeyEvent {
                 code: KeyCode::Up, ..
             } => self.move_selection(-1),
             KeyEvent {
@@ -392,6 +403,64 @@ impl App {
         }
         self.selected = (self.selected as isize + delta)
             .clamp(0, self.rows.len().saturating_sub(1) as isize) as usize;
+    }
+
+    fn move_selected_job(&mut self, delta: isize) -> Result<()> {
+        let Some(job) = self.selected_job() else {
+            return Ok(());
+        };
+        let Some(group_order) = self.swap_selected_job_within_group(delta) else {
+            return Ok(());
+        };
+        reorder_jobs(&group_order)?;
+        self.refresh()?;
+        if let Some(index) = self.rows.iter().position(|row| match row {
+            Row::Job(row_job) => row_job.id == job.id,
+            Row::Header { .. } => false,
+        }) {
+            self.selected = index;
+        }
+        Ok(())
+    }
+
+    fn swap_selected_job_within_group(&mut self, delta: isize) -> Option<Vec<String>> {
+        if !matches!(self.rows.get(self.selected), Some(Row::Job(_))) {
+            return None;
+        }
+        let (start, end) = self.selected_group_bounds();
+        let target = self.selected as isize + delta;
+        if target < start as isize || target >= end as isize {
+            return None;
+        }
+        let target = target as usize;
+        if !matches!(self.rows.get(target), Some(Row::Job(_))) {
+            return None;
+        }
+        self.rows.swap(self.selected, target);
+        self.selected = target;
+        Some(self.job_ids_in_range(start, end))
+    }
+
+    fn selected_group_bounds(&self) -> (usize, usize) {
+        let header = (0..=self.selected)
+            .rev()
+            .find(|index| matches!(self.rows.get(*index), Some(Row::Header { .. })))
+            .unwrap_or(0);
+        let start = header + 1;
+        let end = (self.selected + 1..self.rows.len())
+            .find(|index| matches!(self.rows.get(*index), Some(Row::Header { .. })))
+            .unwrap_or(self.rows.len());
+        (start, end)
+    }
+
+    fn job_ids_in_range(&self, start: usize, end: usize) -> Vec<String> {
+        self.rows[start..end]
+            .iter()
+            .filter_map(|row| match row {
+                Row::Job(job) => Some(job.id.clone()),
+                Row::Header { .. } => None,
+            })
+            .collect()
     }
 
     fn submit(&mut self, terminal: &mut Term) -> Result<bool> {
@@ -623,7 +692,7 @@ impl App {
             frame.render_widget(input_widget, chunks[3]);
 
             frame.render_widget(
-                Paragraph::new("enter to open/send . space to reply . ctrl+x stop/delete . ctrl+s group . ctrl+t pin . ? help"),
+                Paragraph::new("enter open/send/fold . space reply . shift+up/down reorder . ctrl+x stop/delete . ctrl+s group . ctrl+t pin . ? help"),
                 chunks[4],
             );
         })?;
@@ -702,7 +771,8 @@ fn render_help() -> Vec<Line<'static>> {
     [
         "Shortcuts",
         "up/down select . enter open or send . space peek/reply . right attach",
-        "ctrl+x stop, press again to delete . ctrl+t pin . ctrl+s group by state/directory",
+        "shift+up/down reorder within group . ctrl+x stop, press again to delete",
+        "ctrl+t pin . ctrl+s group by state/directory",
         "type a prompt to dispatch . with peek open, typed text replies to selected session",
         "type /rename <title> while a row is selected to rename it . esc exits",
     ]
@@ -909,6 +979,38 @@ mod tests {
         assert!(app.toggle_selected_group());
 
         assert_eq!(app.dispatch_options().cwd, Some(PathBuf::from("/repo")));
+    }
+
+    #[test]
+    fn shift_move_swaps_jobs_only_inside_current_group() {
+        let mut app = App {
+            jobs: vec![
+                job("first", JobStatus::Working, false, false),
+                job("second", JobStatus::Working, false, false),
+                job("done", JobStatus::Completed, false, false),
+            ],
+            ..Default::default()
+        };
+        app.build_rows();
+        app.selected = 2;
+
+        let order = app.swap_selected_job_within_group(-1).unwrap();
+        assert_eq!(order, vec!["second".to_string(), "first".to_string()]);
+        assert_eq!(app.selected, 1);
+
+        assert!(app.swap_selected_job_within_group(-1).is_none());
+    }
+
+    #[test]
+    fn shift_move_ignores_group_headers() {
+        let mut app = App {
+            jobs: vec![job("first", JobStatus::Working, false, false)],
+            ..Default::default()
+        };
+        app.build_rows();
+        app.selected = 0;
+
+        assert!(app.swap_selected_job_within_group(1).is_none());
     }
 
     fn job(id: &str, status: JobStatus, pinned: bool, pr: bool) -> Job {

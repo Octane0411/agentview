@@ -133,11 +133,22 @@ pub fn list_jobs(all: bool) -> Result<Vec<Job>> {
         .into_values()
         .filter(|job| all || (!job.archived && !job.deleted))
         .collect();
-    jobs.sort_by(|a, b| match b.pinned.cmp(&a.pinned) {
-        std::cmp::Ordering::Equal => b.updated_at.cmp(&a.updated_at),
-        ordering => ordering,
-    });
+    sort_jobs(&mut jobs);
     Ok(jobs)
+}
+
+fn sort_jobs(jobs: &mut [Job]) {
+    jobs.sort_by(|a, b| {
+        b.pinned
+            .cmp(&a.pinned)
+            .then_with(|| match (a.manual_order, b.manual_order) {
+                (Some(left), Some(right)) => left.cmp(&right),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            })
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+    });
 }
 
 pub fn put_job(job: Job) -> Result<Job> {
@@ -230,4 +241,65 @@ pub fn remove_job_files(job_id: &str) -> Result<()> {
         fs::remove_dir_all(path)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::{JobBackend, JobStatus, ProcessState};
+
+    #[test]
+    fn manual_order_sorts_before_updated_at_with_pinned_first() {
+        let mut jobs = vec![
+            job("newer", None, false, "2026-05-14T10:00:00Z"),
+            job("second", Some(1), false, "2026-05-14T08:00:00Z"),
+            job("pinned", Some(9), true, "2026-05-14T07:00:00Z"),
+            job("first", Some(0), false, "2026-05-14T06:00:00Z"),
+        ];
+
+        sort_jobs(&mut jobs);
+
+        assert_eq!(
+            jobs.iter().map(|job| job.id.as_str()).collect::<Vec<_>>(),
+            vec!["pinned", "first", "second", "newer"]
+        );
+    }
+
+    fn job(id: &str, manual_order: Option<i64>, pinned: bool, updated_at: &str) -> Job {
+        Job {
+            id: id.to_string(),
+            provider: "codex".to_string(),
+            backend: JobBackend::AppServer,
+            codex_thread_id: None,
+            codex_turn_id: None,
+            title: id.to_string(),
+            initial_prompt: id.to_string(),
+            repo_root: "/repo".to_string(),
+            cwd: "/repo".to_string(),
+            dispatch_cwd: "/repo".to_string(),
+            worktree_path: None,
+            worktree_branch: None,
+            model: None,
+            profile: None,
+            approval_policy: "never".to_string(),
+            sandbox: "workspace-write".to_string(),
+            status: JobStatus::Working,
+            process_state: ProcessState::Exited,
+            pid: None,
+            active_worker_pid: None,
+            pinned,
+            manual_order,
+            archived: false,
+            deleted: false,
+            last_summary: None,
+            last_output: None,
+            blocking_request: None,
+            pr_refs: Vec::new(),
+            created_at: updated_at.to_string(),
+            updated_at: updated_at.to_string(),
+            completed_at: None,
+            exit_code: None,
+            error: None,
+        }
+    }
 }

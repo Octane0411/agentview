@@ -1,5 +1,7 @@
 use crate::schema::{Job, JobBackend, JobStatus, ProcessState};
-use crate::store::{append_job_event, put_job, remove_job_files, require_job, update_job};
+use crate::store::{
+    append_job_event, put_job, remove_job_files, require_job, update_job, with_store,
+};
 use crate::supervisor::{
     supervisor_resolve_server_request, supervisor_start_app_server_turn,
     supervisor_stop_app_server_turn,
@@ -414,6 +416,21 @@ pub fn rename_job(job_id: &str, title: &str) -> Result<()> {
         Ok(())
     })?;
     Ok(())
+}
+
+pub fn reorder_jobs(job_ids: &[String]) -> Result<()> {
+    if job_ids.is_empty() {
+        return Ok(());
+    }
+    with_store(|store| {
+        for (index, job_id) in job_ids.iter().enumerate() {
+            let Some(job) = store.jobs.get_mut(job_id) else {
+                bail!("Unknown job: {job_id}");
+            };
+            job.manual_order = Some(index as i64);
+        }
+        Ok(())
+    })
 }
 
 pub fn pin_job(job_id: &str, pinned: Option<bool>) -> Result<()> {

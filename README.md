@@ -58,6 +58,7 @@ agentview doctor
 - `Enter`: attach selected session, collapse/expand a group header, or
   dispatch/send typed input
 - `Space`: peek selected session; when peek is open, typed input replies to that session
+- `Shift+Up` / `Shift+Down`: reorder selected session within its group
 - `Ctrl+X`: stop selected session; press again within two seconds to delete
 - `Ctrl+T`: pin/unpin
 - `Ctrl+S`: switch grouping between state and directory; the choice persists

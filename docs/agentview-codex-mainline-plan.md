@@ -247,6 +247,8 @@ Current checkpoint:
   collapses or expands that group.
 - A collapsed directory group header can still act as the dispatch target for a
   new task.
+- `Shift+Up` / `Shift+Down` reorders the selected session within its visible
+  group and persists the order in `Job.manualOrder`.
 
 Acceptance:
 
