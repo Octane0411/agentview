@@ -121,7 +121,7 @@ index 905f62f86f..e3a6ec0da4 100644
  
      #[tokio::test]
      async fn app_keymap_shortcuts_are_disabled_while_keymap_view_is_active() {
-@@ -280,4 +305,41 @@ mod tests {
+@@ -280,4 +305,40 @@ mod tests {
  
          assert!(!app.app_keymap_shortcuts_available());
      }
@@ -136,7 +136,7 @@ index 905f62f86f..e3a6ec0da4 100644
 +            code: KeyCode::Left,
 +            modifiers: KeyModifiers::NONE,
 +            kind: KeyEventKind::Repeat,
-+            state: Default::default(),
++            state: crossterm::event::KeyEventState::NONE,
 +        }));
 +        assert!(!hosted_detach_shortcut_matches(KeyEvent::new(
 +            KeyCode::Left,
@@ -158,8 +158,7 @@ index 905f62f86f..e3a6ec0da4 100644
 +        app.hosted_detach_enabled = true;
 +        assert!(app.should_host_detach(key));
 +
-+        app.chat_widget
-+            .handle_key_event(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
++        app.chat_widget.insert_str("x");
 +        assert!(!app.should_host_detach(key));
 +    }
  }

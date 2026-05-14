@@ -110,15 +110,17 @@ Already implemented:
 - `crates/agentview-codex-hosted`, the AgentView-side hosted-session contract
   and helper invocation shape.
 - App-server-backed attach routes through the hosted helper contract.
+- Supervisor app-server dispatch now uses a local websocket endpoint by
+  default so a hosted helper can reconnect to the same running thread.
+- Patched Codex helper build script produces `target/debug/agentview-codex-hosted`.
 
 Still missing from the normal path:
 
-- Real hosted Codex helper/library binary is not wired into the workspace yet.
-- Supervisor app-server is still private to the implemented dispatch path;
-  hosted attach needs a connectable loopback websocket endpoint or direct
-  library hosting.
+- Real hosted attach/detach still needs an interactive PTY E2E against Codex.
 - Live reply to a running app-server turn is not wired yet.
-- Real Codex E2E for hosted attach/detach is still pending.
+- Helper packaging/version-update workflow is still manual.
+- Direct library-hosted Codex TUI remains the preferred long-term shape; the
+  current MVP uses the helper-process bridge.
 
 ## How AgentView Wraps Codex Source
 
@@ -170,9 +172,11 @@ agentview/
   patches/
     codex/
       0001-expose-hosted-session-view.patch
+      0002-add-agentview-hosted-helper-bin.patch
   tools/
     update-codex.sh
     check-codex-patches.sh
+    build-codex-hosted-helper.sh
 ```
 
 Pinned source:
@@ -206,6 +210,22 @@ submodule, applying a small patch queue that exposes hosted-session seams, and
 calling those seams only from AgentView adapter crates. AgentView does not copy
 Codex TUI files into its own TUI, and it does not become a long-lived fork of
 Codex behavior.
+
+Current MVP source wrapping chain:
+
+```text
+third_party/codex pinned to rust-v0.130.0
+  -> patches/codex/*.patch expose hosted Codex TUI seams
+  -> tools/build-codex-hosted-helper.sh applies patches to target/agentview-codex-patched
+  -> cargo builds codex-tui --bin agentview-codex-hosted
+  -> helper is copied to target/debug/agentview-codex-hosted
+  -> AgentView attach resolves helper from AGENTVIEW_CODEX_HOSTED, then sibling binary, then PATH
+  -> helper calls codex_tui::hosted::run_hosted_session_view(...)
+  -> Codex TUI renders the selected AgentView job's Codex thread
+```
+
+This lets AgentView track upstream Codex by rebasing a small patch queue instead
+of copying the Codex TUI implementation.
 
 ### Source Integration Contract
 
@@ -609,33 +629,46 @@ Tasks:
    submodule edits.
 2. [x] Patch `codex-tui` to expose `run_hosted_session_view`.
 3. [x] Build `agentview-codex-hosted` as a bridge crate.
-4. If direct library hosting is blocked by terminal ownership or workspace
+4. [x] If direct library hosting is blocked by terminal ownership or workspace
    dependency shape, build a temporary hosted helper binary from the same patch.
 5. [x] Add a hidden AgentView command that opens an app-server-created thread
    by id through the hosted helper contract.
 6. [x] Pass `--app-server-url`, `--thread-id`, and `--cwd` into the hosted
    helper contract.
-7. Render Codex native conversation UI.
-8. Capture Left Arrow as detach when safe.
-9. Return to AgentView list without interrupting the turn.
+7. [ ] Verify Codex native conversation UI renders through the helper in a PTY.
+8. [x] Capture Left Arrow as detach when safe.
+9. [ ] Return to AgentView list without interrupting the turn in a real PTY E2E.
 
 Current checkpoint:
 
 - `patches/codex/0001-expose-hosted-session-view.patch` adds hosted detach
   support to `codex-tui`.
+- `patches/codex/0002-add-agentview-hosted-helper-bin.patch` adds the
+  patched Codex-side `agentview-codex-hosted` helper binary.
 - `tools/check-codex-patches.sh` verifies that the patch applies cleanly to the
   pinned Codex submodule.
+- `tools/build-codex-hosted-helper.sh` builds the helper from a patched Codex
+  source copy under `target/agentview-codex-patched` and installs the binary at
+  `target/debug/agentview-codex-hosted`.
 - `crates/agentview-codex-hosted` owns the AgentView-side hosted session
   contract and temporary helper invocation shape.
+- `HostedHelper::from_env_or_default()` resolves the helper from
+  `AGENTVIEW_CODEX_HOSTED`, then from a sibling `agentview-codex-hosted` binary
+  next to the current `agentview` executable, then from `PATH`.
 - Hidden `agentview __hosted-attach <job_id>` resolves an app-server-backed
   job to its Codex thread id and invokes the hosted helper with `--thread-id`
   and `--cwd`. When the job is actively running under the supervisor websocket
   transport, it also invokes the helper with `--app-server-url`.
 - Public `agentview attach <job_id>` and TUI Enter now route app-server-backed
   jobs to the hosted helper contract instead of `codex resume`.
-- Full `cargo test -p codex-tui hosted_detach --lib` still needs a successful
-  Codex dependency fetch; the first attempt was blocked in dependency download
-  by external network failures.
+- `tools/build-codex-hosted-helper.sh` was verified on 2026-05-14 and produced
+  `target/debug/agentview-codex-hosted`.
+- `target/debug/agentview-codex-hosted --help` was verified on 2026-05-14 and
+  exposes `--thread-id`, `--cwd`, `--app-server-url`,
+  `--app-server-auth-token`, and `--no-alt-screen`.
+- Focused patched Codex test was verified on 2026-05-14:
+  `cargo test --manifest-path target/agentview-codex-patched/codex/codex-rs/Cargo.toml -p codex-tui hosted_detach --lib`.
+- Full real hosted attach/detach E2E is still pending.
 
 Exit criteria:
 
@@ -742,28 +775,22 @@ Regression tests:
 
 The next implementation work should follow this order:
 
-1. Make the supervisor's app-server attachable.
-   - Reserve a loopback port and start Codex with
-     `codex app-server --listen ws://127.0.0.1:<port>`.
-   - Connect AgentView runtime to that endpoint using Codex's
-     `RemoteAppServerClient` or an isolated AgentView websocket adapter.
-   - Expose the endpoint over supervisor IPC so the list/attach path can query
-     it.
-   - Keep stdio support only as a test/fallback transport.
-2. Extend the hosted helper contract.
-   - Add `--app-server-url ws://127.0.0.1:<port>` next to `--thread-id` and
-     `--cwd`.
-   - Reject hosted attach if the job has no Codex thread id or if the supervisor
-     has no connectable app-server endpoint.
-3. Build the real hosted Codex helper from patched Codex source.
-   - Link or wrap `codex_tui::hosted::run_hosted_session_view`.
-   - Use Codex's remote app-server client to open the exact thread id.
-   - Return a distinct detached exit code/result for Left Arrow.
-4. Run the hosted detach E2E.
+1. Run the hosted detach E2E in a real PTY.
    - Dispatch a real job.
    - Enter hosted Codex view.
    - Detach with Left Arrow while the turn remains alive.
    - Re-enter the same thread and confirm no `conversation interrupted` marker.
+2. Fix any terminal ownership issues found by that E2E.
+   - The list TUI must suspend/redraw cleanly around the helper.
+   - The helper must exit as Detached on Left Arrow, not Quit or interrupted.
+3. Wire live reply/approval for already running app-server turns.
+   - `needs_input` rows should expose list-level reply/approval where possible.
+   - Entering the hosted Codex view remains the canonical full-session approval
+     path.
+4. Formalize helper packaging and Codex update flow.
+   - Keep `tools/check-codex-patches.sh` and `tools/build-codex-hosted-helper.sh`
+     as the required checks when bumping `third_party/codex`.
+   - Document the tested Codex CLI/source version after every bump.
 5. Then fill the remaining parity gaps.
    - Live reply/approval while a turn is in `needs_input`.
    - Dirty worktree cleanup protection.

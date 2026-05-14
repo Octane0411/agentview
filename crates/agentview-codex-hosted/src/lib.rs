@@ -32,7 +32,16 @@ impl HostedHelper {
     pub fn from_env_or_default() -> Self {
         let binary = std::env::var_os("AGENTVIEW_CODEX_HOSTED")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("agentview-codex-hosted"));
+            .unwrap_or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|path| {
+                        path.parent()
+                            .map(|parent| parent.join("agentview-codex-hosted"))
+                    })
+                    .filter(|path| path.exists())
+                    .unwrap_or_else(|| PathBuf::from("agentview-codex-hosted"))
+            });
         Self::new(binary)
     }
 

@@ -1,0 +1,91 @@
+diff --git a/codex-rs/tui/Cargo.toml b/codex-rs/tui/Cargo.toml
+index 5f31f662b0..09f6f8c53f 100644
+--- a/codex-rs/tui/Cargo.toml
++++ b/codex-rs/tui/Cargo.toml
+@@ -14,0 +15,4 @@
++
++[[bin]]
++name = "agentview-codex-hosted"
++path = "src/bin/agentview-codex-hosted.rs"
+diff --git a/codex-rs/tui/src/bin/agentview-codex-hosted.rs b/codex-rs/tui/src/bin/agentview-codex-hosted.rs
+new file mode 100644
+index 0000000000..7c0f864e77
+--- /dev/null
++++ b/codex-rs/tui/src/bin/agentview-codex-hosted.rs
+@@ -0,0 +1,76 @@
++use std::path::PathBuf;
++
++use clap::Parser;
++use codex_arg0::Arg0DispatchPaths;
++use codex_config::LoaderOverrides;
++use codex_tui::hosted::HostedSessionConfig;
++use codex_tui::hosted::HostedSessionExit;
++use codex_tui::hosted::run_hosted_session_view;
++
++const EXIT_DETACHED: i32 = 0;
++const EXIT_FATAL: i32 = 1;
++const EXIT_QUIT: i32 = 10;
++
++#[derive(Debug, Parser)]
++#[command(
++    name = "agentview-codex-hosted",
++    about = "AgentView-hosted Codex session helper"
++)]
++struct Args {
++    #[arg(long = "thread-id")]
++    thread_id: String,
++
++    #[arg(long)]
++    cwd: Option<PathBuf>,
++
++    #[arg(long = "app-server-url")]
++    app_server_url: Option<String>,
++
++    #[arg(long = "app-server-auth-token")]
++    app_server_auth_token: Option<String>,
++
++    #[arg(long = "no-alt-screen", default_value_t = false)]
++    no_alt_screen: bool,
++}
++
++fn main() -> anyhow::Result<()> {
++    let args = Args::parse();
++    let runtime = tokio::runtime::Builder::new_multi_thread()
++        .enable_all()
++        .build()?;
++    let result = runtime.block_on(run_hosted_session_view(
++        HostedSessionConfig {
++            thread_id: args.thread_id,
++            cwd: args.cwd,
++            remote_url: args.app_server_url,
++            remote_auth_token: args.app_server_auth_token,
++            no_alt_screen: args.no_alt_screen,
++        },
++        Arg0DispatchPaths::default(),
++        LoaderOverrides::default(),
++    ));
++
++    match result {
++        Ok(HostedSessionExit::Detached) => std::process::exit(EXIT_DETACHED),
++        Ok(HostedSessionExit::Quit) => std::process::exit(EXIT_QUIT),
++        Ok(HostedSessionExit::Fatal(message)) => {
++            eprintln!("ERROR: {message}");
++            std::process::exit(EXIT_FATAL);
++        }
++        Err(error) => {
++            eprintln!("ERROR: {error:#}");
++            std::process::exit(EXIT_FATAL);
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn quit_and_fatal_exit_codes_are_not_detached() {
++        assert_ne!(EXIT_QUIT, EXIT_DETACHED);
++        assert_ne!(EXIT_FATAL, EXIT_DETACHED);
++    }
++}

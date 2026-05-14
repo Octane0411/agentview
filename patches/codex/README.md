@@ -10,11 +10,12 @@ Patch rules:
 - Do not patch Codex model, tool, approval, or transcript semantics.
 - Generate patches from `third_party/codex` and store them here.
 - `tools/check-codex-patches.sh` must pass before committing.
+- `tools/build-codex-hosted-helper.sh` must build when patches change hosted
+  TUI behavior or the helper binary.
 - `tools/update-codex.sh <ref>` is the supported way to move Codex to a new tag
   or commit and re-check the patch queue.
 
 Expected initial patches:
 
 - `0001-expose-hosted-session-view.patch`
-- `0002-add-host-detach-event.patch`
-
+- `0002-add-agentview-hosted-helper-bin.patch`
