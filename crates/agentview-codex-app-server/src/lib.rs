@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use codex_app_server_protocol::{
     ClientInfo, ClientRequest, InitializeCapabilities, InitializeParams, InitializeResponse,
     JSONRPCError, JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, RequestId,
+    ServerNotification as CodexServerNotification, ServerRequest as CodexServerRequest,
     ThreadResumeParams as CodexThreadResumeParams, ThreadStartParams as CodexThreadStartParams,
     TurnInterruptParams, TurnStartParams as CodexTurnStartParams, UserInput,
 };
@@ -687,15 +688,12 @@ fn wire_message_from_value(value: Value) -> Result<WireMessage> {
     let message = serde_json::from_value::<JSONRPCMessage>(value)
         .context("failed to parse app-server JSON-RPC message")?;
     match message {
-        JSONRPCMessage::Request(request) => Ok(WireMessage::Request(ServerRequest {
-            id: request_id_to_value(request.id),
-            method: request.method,
-            params: request.params.unwrap_or(Value::Null),
-        })),
-        JSONRPCMessage::Notification(notification) => Ok(WireMessage::Notification(Notification {
-            method: notification.method,
-            params: notification.params.unwrap_or(Value::Null),
-        })),
+        JSONRPCMessage::Request(request) => {
+            Ok(WireMessage::Request(server_request_from_jsonrpc(request)?))
+        }
+        JSONRPCMessage::Notification(notification) => Ok(WireMessage::Notification(
+            notification_from_jsonrpc(notification),
+        )),
         JSONRPCMessage::Response(response) => Ok(WireMessage::Response(ResponseMessage {
             id: request_id_to_value(response.id),
             result: Some(response.result),
@@ -707,6 +705,67 @@ fn wire_message_from_value(value: Value) -> Result<WireMessage> {
             error: Some(error),
         })),
     }
+}
+
+fn server_request_from_jsonrpc(request: JSONRPCRequest) -> Result<ServerRequest> {
+    let raw = ServerRequest {
+        id: request_id_to_value(request.id.clone()),
+        method: request.method.clone(),
+        params: request.params.clone().unwrap_or(Value::Null),
+    };
+
+    match CodexServerRequest::try_from(request) {
+        Ok(request) => server_request_from_typed(request),
+        Err(error) if known_server_request_method(&raw.method) => Err(error).with_context(|| {
+            format!(
+                "failed to parse supported Codex server request `{}` through protocol types",
+                raw.method
+            )
+        }),
+        Err(_) => Ok(raw),
+    }
+}
+
+fn server_request_from_typed(request: CodexServerRequest) -> Result<ServerRequest> {
+    let value =
+        serde_json::to_value(request).context("failed to serialize typed Codex server request")?;
+    let id = value
+        .get("id")
+        .cloned()
+        .context("typed Codex server request has no id")?;
+    let method = value
+        .get("method")
+        .and_then(Value::as_str)
+        .context("typed Codex server request has no method")?
+        .to_string();
+    let params = value.get("params").cloned().unwrap_or(Value::Null);
+    Ok(ServerRequest { id, method, params })
+}
+
+fn notification_from_jsonrpc(notification: JSONRPCNotification) -> Notification {
+    let raw = Notification {
+        method: notification.method.clone(),
+        params: notification.params.clone().unwrap_or(Value::Null),
+    };
+
+    let Ok(notification) = CodexServerNotification::try_from(notification) else {
+        return raw;
+    };
+    let method = notification.to_string();
+    let params = notification.to_params().unwrap_or(raw.params);
+    Notification { method, params }
+}
+
+fn known_server_request_method(method: &str) -> bool {
+    matches!(
+        method,
+        "item/tool/requestUserInput"
+            | "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+            | "applyPatchApproval"
+            | "execCommandApproval"
+    )
 }
 
 fn request_id_from_value(value: &Value) -> Result<RequestId> {
@@ -948,4 +1007,110 @@ fn write_websocket_text(stream: &mut TcpStream, text: &str) -> Result<()> {
     stream.write_all(&frame)?;
     stream.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn supported_server_request_parses_through_codex_protocol_types() {
+        let message = wire_message_from_value(json!({
+            "id": "req-1",
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "questions": [
+                    {
+                        "id": "confirm",
+                        "header": "Confirm",
+                        "question": "Continue?",
+                        "isOther": false,
+                        "isSecret": false,
+                        "options": null
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+
+        let WireMessage::Request(request) = message else {
+            panic!("expected server request");
+        };
+        assert_eq!(request.id, json!("req-1"));
+        assert_eq!(request.method, "item/tool/requestUserInput");
+        assert_eq!(request.params["threadId"], "thread-1");
+        assert_eq!(request.params["questions"][0]["id"], "confirm");
+    }
+
+    #[test]
+    fn supported_server_request_rejects_invalid_protocol_payload() {
+        let error = wire_message_from_value(json!({
+            "id": "req-1",
+            "method": "item/tool/requestUserInput",
+            "params": {}
+        }))
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("failed to parse supported Codex server request"));
+    }
+
+    #[test]
+    fn unknown_server_request_falls_back_to_raw_json() {
+        let message = wire_message_from_value(json!({
+            "id": "req-custom",
+            "method": "custom/request",
+            "params": { "value": 42 }
+        }))
+        .unwrap();
+
+        let WireMessage::Request(request) = message else {
+            panic!("expected server request");
+        };
+        assert_eq!(request.id, json!("req-custom"));
+        assert_eq!(request.method, "custom/request");
+        assert_eq!(request.params, json!({ "value": 42 }));
+    }
+
+    #[test]
+    fn known_notification_uses_codex_protocol_params() {
+        let message = wire_message_from_value(json!({
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "delta": "hello"
+            }
+        }))
+        .unwrap();
+
+        let WireMessage::Notification(notification) = message else {
+            panic!("expected notification");
+        };
+        assert_eq!(notification.method, "item/agentMessage/delta");
+        assert_eq!(notification.params["delta"], "hello");
+    }
+
+    #[test]
+    fn unknown_notification_falls_back_to_raw_json() {
+        let message = wire_message_from_value(json!({
+            "method": "thread/status/changed",
+            "params": { "threadId": "thread-1", "status": "running" }
+        }))
+        .unwrap();
+
+        let WireMessage::Notification(notification) = message else {
+            panic!("expected notification");
+        };
+        assert_eq!(notification.method, "thread/status/changed");
+        assert_eq!(
+            notification.params,
+            json!({ "threadId": "thread-1", "status": "running" })
+        );
+    }
 }

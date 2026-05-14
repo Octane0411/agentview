@@ -340,6 +340,18 @@ Current checkpoint:
   `PathBuf`.
 - `agentview-codex-app-server` uses Codex's `JSONRPCError` internally instead
   of maintaining a duplicate JSON-RPC error struct.
+- Supported incoming Codex server requests now parse through Codex's typed
+  `ServerRequest` protocol enum before being exposed as AgentView raw metadata;
+  unknown request methods still fall back to raw JSON so protocol gaps remain
+  visible without breaking unrelated events.
+- Incoming notifications now opportunistically normalize through Codex's typed
+  `ServerNotification` enum, with raw fallback for legacy or test-only
+  notifications that are not represented in the current protocol crate.
+- Directly depending on Codex `app-server-client` remains deferred because the
+  current crate pulls in the full in-process app-server/core dependency graph;
+  the MVP keeps using the installed `codex app-server` process and a narrow
+  sync adapter until that dependency boundary can be split upstream or isolated
+  behind a separate feature.
 - `agentview-core` delegates pending Codex server-request response construction
   to `agentview-codex-runtime` instead of hand-assembling those protocol
   payloads directly.
