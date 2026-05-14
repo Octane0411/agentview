@@ -11,7 +11,7 @@ The current implementation is a Codex-only MVP. It uses the Codex CLI fallback p
 
 The full product spec lives in `docs/codex-agent-view-spec.md`.
 
-The implementation is TypeScript-first and uses Zod schemas for persisted job/store boundaries.
+The implementation is Rust-first and uses Serde schemas for persisted job/store boundaries.
 
 ## Usage
 
@@ -81,25 +81,25 @@ Codex owns the conversation transcript and resume state. Agent View stores only 
 Run tests:
 
 ```bash
-npm test
+cargo test
 ```
-
-Run the opt-in real Codex E2E chain:
-
-```bash
-AGENTVIEW_REAL_CODEX_E2E=1 npm run test:e2e:real
-```
-
-This creates a temporary git repo and isolated `AGENTVIEW_HOME`, dispatches a real Codex job, verifies `list`/`peek`/`logs`, resumes the same Codex session, smoke-tests TUI/attach with `expect` when available, and checks that edits stay inside the Agent View worktree.
 
 Build the CLI:
 
 ```bash
-npm run build
+cargo build -p agentview-cli
 ```
 
 Run without installing globally:
 
 ```bash
-node ./dist/bin/agentview.js help
+cargo run -p agentview-cli -- help
 ```
+
+Install locally:
+
+```bash
+cargo install --path crates/agentview-cli --force
+```
+
+The integration test uses a fake `codex` executable to verify dispatch, list, peek, attach, and conservative worktree deletion. Manual real-Codex verification should still be run before relying on a release build.

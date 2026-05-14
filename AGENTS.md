@@ -46,8 +46,8 @@ Prefer this sequence:
 
 ## Implementation Notes
 
-- Implement app code in TypeScript. Do not add new JavaScript source files for runtime code.
-- Use Zod schemas for persisted state and external event boundaries.
+- Implement app code in Rust. Do not add TypeScript or JavaScript runtime code.
+- Use Serde schemas for persisted state and external event boundaries.
 - Use structured state rather than parsing terminal output when an API or JSON event stream is available.
 - Keep worktree cleanup conservative. Never delete uncommitted work silently.
 - Prefer small vertical slices over broad scaffolding.
