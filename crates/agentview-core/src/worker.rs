@@ -1,4 +1,4 @@
-use crate::codex::run_codex_turn;
+use crate::codex::{run_codex_app_server_turn, run_codex_turn};
 use crate::schema::{JobStatus, ProcessState};
 use crate::store::{append_job_event, require_job, update_job};
 use crate::util::now_iso;
@@ -9,6 +9,10 @@ pub fn worker_main(job_id: &str, mode: &str, prompt: Option<&str>) -> Result<()>
     let job = require_job(job_id)?;
     let (turn_prompt, resume) = match mode {
         "run" => (job.initial_prompt.clone(), false),
+        "app-server-run" => {
+            run_codex_app_server_turn(job_id, &job.initial_prompt)?;
+            return Ok(());
+        }
         "reply" | "resume" => (
             prompt
                 .map(str::to_string)

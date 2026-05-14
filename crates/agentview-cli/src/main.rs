@@ -1,8 +1,8 @@
 use agentview_codex_app_server::{AppServerClient, ThreadStartOptions};
 use agentview_core::codex::attach_codex;
 use agentview_core::jobs::{
-    DispatchOptions, RemoveOptions, archive_job, dispatch_job, doctor, pin_job, remove_job,
-    rename_job, reply_to_job, respawn_job, stop_job,
+    DispatchBackend, DispatchOptions, RemoveOptions, archive_job, dispatch_job, doctor, pin_job,
+    remove_job, rename_job, reply_to_job, respawn_job, stop_job,
 };
 use agentview_core::schema::{Job, JobStatus};
 use agentview_core::store::{list_jobs, read_job_last, require_job, tail_job_events};
@@ -37,6 +37,8 @@ enum Commands {
         sandbox: Option<String>,
         #[arg(long)]
         attach: bool,
+        #[arg(long, hide = true)]
+        app_server: bool,
         #[arg(required = true)]
         task: Vec<String>,
     },
@@ -120,8 +122,9 @@ fn run() -> Result<()> {
             profile,
             sandbox,
             attach,
+            app_server,
             task,
-        }) => cmd_run(cwd, model, profile, sandbox, attach, task),
+        }) => cmd_run(cwd, model, profile, sandbox, attach, app_server, task),
         Some(Commands::List { all }) => cmd_list(all),
         Some(Commands::Peek { job_id }) => cmd_peek(&job_id),
         Some(Commands::Logs { job_id, limit }) => cmd_logs(&job_id, limit.unwrap_or(80)),
@@ -156,6 +159,7 @@ fn cmd_run(
     profile: Option<String>,
     sandbox: Option<String>,
     attach: bool,
+    app_server: bool,
     task: Vec<String>,
 ) -> Result<()> {
     let prompt = task.join(" ").trim().to_string();
@@ -169,6 +173,11 @@ fn cmd_run(
             model,
             profile,
             sandbox,
+            backend: if app_server {
+                DispatchBackend::AppServer
+            } else {
+                DispatchBackend::FallbackExec
+            },
             ..Default::default()
         },
     )?;

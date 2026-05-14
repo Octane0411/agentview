@@ -91,6 +91,65 @@ fn dispatch_peek_attach_and_remove_with_fake_codex() {
     );
 }
 
+#[test]
+fn app_server_dispatch_uses_thread_and_turn_start() {
+    let env = TestEnv::new();
+    let repo = env.git_repo();
+    let codex = env.fake_codex();
+    let store = TempDir::new().unwrap();
+
+    let output = env
+        .agentview(&store, &codex)
+        .args([
+            "run",
+            "--app-server",
+            "--cwd",
+            repo.to_str().unwrap(),
+            "write a fake app-server summary",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let job_id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("backgrounded"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("job id in run output")
+        .to_string();
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env.agentview(&store, &codex).arg("list").output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains(&job_id) && stdout.contains("completed")
+    });
+
+    let peek = env
+        .agentview(&store, &codex)
+        .args(["peek", &job_id])
+        .output()
+        .unwrap();
+    assert!(peek.status.success());
+    let peek_stdout = String::from_utf8_lossy(&peek.stdout);
+    assert!(peek_stdout.contains(THREAD_ID));
+    assert!(peek_stdout.contains("completed fake app-server"));
+
+    let logs = env
+        .agentview(&store, &codex)
+        .args(["logs", &job_id])
+        .output()
+        .unwrap();
+    assert!(logs.status.success());
+    let logs_stdout = String::from_utf8_lossy(&logs.stdout);
+    assert!(logs_stdout.contains("app_server_thread_started"));
+    assert!(logs_stdout.contains("app_server_turn_started"));
+    assert!(!logs_stdout.contains("started fake codex"));
+}
+
 struct TestEnv {
     root: TempDir,
 }
@@ -133,11 +192,51 @@ impl TestEnv {
         let bin = self.root.path().join("bin");
         fs::create_dir_all(&bin).unwrap();
         let codex = bin.join("codex");
+        let codex_home = self.root.path().join("codex-home");
+        fs::create_dir_all(&codex_home).unwrap();
         fs::write(
             &codex,
             format!(
                 r#"#!/bin/sh
 set -eu
+if [ "${{1:-}}" = "app-server" ]; then
+  if [ "${{2:-}}" != "--listen" ] || [ "${{3:-}}" != "stdio://" ]; then
+    printf '%s\n' "unexpected app-server args: $*" >&2
+    exit 2
+  fi
+  cwd="$(pwd)"
+  IFS= read -r init
+  case "$init" in
+    *'"method":"initialize"'*) ;;
+    *) printf '%s\n' "expected initialize, got: $init" >&2; exit 3 ;;
+  esac
+  printf '%s\n' '{{"id":0,"result":{{"userAgent":"fake-codex/0.0.0","codexHome":"{codex_home}","platformFamily":"unix","platformOs":"macos"}}}}'
+
+  IFS= read -r initialized
+  case "$initialized" in
+    *'"method":"initialized"'*) ;;
+    *) printf '%s\n' "expected initialized, got: $initialized" >&2; exit 4 ;;
+  esac
+
+  IFS= read -r thread_start
+  case "$thread_start" in
+    *'"method":"thread/start"'*) ;;
+    *) printf '%s\n' "expected thread/start, got: $thread_start" >&2; exit 5 ;;
+  esac
+  printf '%s\n' "{{\"method\":\"thread/started\",\"params\":{{\"thread\":{{\"id\":\"{THREAD_ID}\",\"sessionId\":\"{THREAD_ID}\",\"preview\":\"\",\"status\":\"running\",\"cwd\":\"$cwd\",\"name\":null}}}}}}"
+  printf '%s\n' "{{\"id\":1,\"result\":{{\"thread\":{{\"id\":\"{THREAD_ID}\",\"sessionId\":\"{THREAD_ID}\",\"preview\":\"\",\"status\":\"running\",\"cwd\":\"$cwd\",\"name\":null}},\"model\":\"fake-model\",\"modelProvider\":\"fake-provider\",\"serviceTier\":null,\"cwd\":\"$cwd\"}}}}"
+
+  IFS= read -r turn_start
+  case "$turn_start" in
+    *'"method":"turn/start"'*) ;;
+    *) printf '%s\n' "expected turn/start, got: $turn_start" >&2; exit 6 ;;
+  esac
+  printf '%s\n' '{{"id":2,"result":{{"turn":{{"id":"turn-1","status":"running","startedAt":0,"completedAt":null,"durationMs":null}}}}}}'
+  printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"{THREAD_ID}","turn":{{"id":"turn-1","status":"running","startedAt":0,"completedAt":null,"durationMs":null}}}}}}'
+  printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"{THREAD_ID}","turnId":"turn-1","itemId":"item-1","delta":"completed fake app-server"}}}}'
+  printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"{THREAD_ID}","turn":{{"id":"turn-1","status":"completed","startedAt":0,"completedAt":1,"durationMs":1}}}}}}'
+  exit 0
+fi
 if [ "${{1:-}}" = "exec" ]; then
   if [ "${{2:-}}" = "resume" ]; then
     printf '%s\n' '{{"type":"thread.started","thread_id":"{THREAD_ID}","message":"resumed fake codex"}}'
@@ -155,7 +254,8 @@ if [ "${{1:-}}" = "resume" ]; then
 fi
 printf '%s\n' "unknown fake codex command: $*" >&2
 exit 2
-"#
+"#,
+                codex_home = codex_home.display()
             ),
         )
         .unwrap();

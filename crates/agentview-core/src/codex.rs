@@ -6,6 +6,9 @@ use crate::util::{
     command_exists, event_failed, event_needs_input, extract_pr_refs, extract_thread_id, home_dir,
     merge_pr_refs, now_iso, path_exists, strip_ansi, summarize_event, truncate,
 };
+use agentview_codex_app_server::{
+    AppServerClient, AppServerEvent, Notification, ServerRequest, ThreadStartOptions,
+};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::fs;
@@ -14,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 pub fn assert_codex_available() -> Result<()> {
     if command_exists("codex") {
@@ -217,6 +221,228 @@ pub fn run_codex_turn(job_id: &str, prompt: &str, resume: bool) -> Result<()> {
     })?;
 
     Ok(())
+}
+
+pub fn run_codex_app_server_turn(job_id: &str, prompt: &str) -> Result<()> {
+    assert_codex_available()?;
+    let job = require_job(job_id)?;
+    update_job(job_id, |job| {
+        job.status = JobStatus::Working;
+        job.process_state = ProcessState::Alive;
+        job.pid = Some(std::process::id());
+        job.active_worker_pid = Some(std::process::id());
+        job.completed_at = None;
+        job.last_summary = Some("Starting Codex app-server session".to_string());
+        job.blocking_request = None;
+        job.error = None;
+        Ok(())
+    })?;
+
+    let mut client = AppServerClient::spawn_stdio()?;
+    let initialized = client.initialize()?;
+    append_job_event(
+        job_id,
+        &json!({
+            "type": "app_server_initialized",
+            "userAgent": initialized.user_agent,
+            "codexHome": initialized.codex_home,
+            "timestamp": now_iso()
+        }),
+    )?;
+
+    let started = client.start_thread(ThreadStartOptions {
+        cwd: Some(PathBuf::from(&job.cwd)),
+        model: job.model.clone(),
+        approval_policy: Some(job.approval_policy.clone()),
+        sandbox: Some(job.sandbox.clone()),
+    })?;
+    let thread_id = started.thread.id.clone();
+    update_job(job_id, |job| {
+        job.codex_thread_id = Some(thread_id.clone());
+        job.last_summary = Some("Codex thread started".to_string());
+        Ok(())
+    })?;
+    append_job_event(
+        job_id,
+        &json!({
+            "type": "app_server_thread_started",
+            "threadId": thread_id.clone(),
+            "timestamp": now_iso()
+        }),
+    )?;
+
+    let turn = client.start_text_turn(&thread_id, prompt)?;
+    append_job_event(
+        job_id,
+        &json!({
+            "type": "app_server_turn_started",
+            "threadId": thread_id,
+            "turnId": turn.turn.id,
+            "timestamp": now_iso()
+        }),
+    )?;
+    update_job(job_id, |job| {
+        job.status = JobStatus::Working;
+        job.last_summary = Some("Codex turn started".to_string());
+        Ok(())
+    })?;
+
+    let mut latest_text = String::new();
+    loop {
+        match client.next_event(Duration::from_millis(250))? {
+            Some(AppServerEvent::Notification(notification)) => {
+                if handle_app_server_notification(job_id, notification, &mut latest_text)? {
+                    break;
+                }
+            }
+            Some(AppServerEvent::ServerRequest(request)) => {
+                handle_app_server_request(job_id, request)?;
+            }
+            None => {}
+        }
+    }
+
+    client.shutdown()?;
+    Ok(())
+}
+
+fn handle_app_server_notification(
+    job_id: &str,
+    notification: Notification,
+    latest_text: &mut String,
+) -> Result<bool> {
+    let method = notification.method.clone();
+    let params = notification.params.clone();
+    append_job_event(
+        job_id,
+        &json!({
+            "type": "app_server_notification",
+            "method": method.clone(),
+            "params": params.clone(),
+            "timestamp": now_iso()
+        }),
+    )?;
+
+    match method.as_str() {
+        "thread/started" => {
+            if let Some(thread_id) = params
+                .get("thread")
+                .and_then(|thread| thread.get("id"))
+                .and_then(Value::as_str)
+            {
+                update_job(job_id, |job| {
+                    job.codex_thread_id = Some(thread_id.to_string());
+                    Ok(())
+                })?;
+            }
+        }
+        "turn/started" => {
+            update_job(job_id, |job| {
+                job.status = JobStatus::Working;
+                job.process_state = ProcessState::Alive;
+                job.last_summary = Some("working".to_string());
+                job.blocking_request = None;
+                Ok(())
+            })?;
+        }
+        "item/agentMessage/delta" | "process/outputDelta" | "item/commandExecution/outputDelta" => {
+            if let Some(delta) = params
+                .get("delta")
+                .or_else(|| params.get("text"))
+                .and_then(Value::as_str)
+            {
+                latest_text.push_str(delta);
+                let summary = truncate(latest_text.trim(), 200);
+                update_job(job_id, |job| {
+                    job.last_output = Some(summary.clone());
+                    job.last_summary = Some(truncate(&summary, 120));
+                    Ok(())
+                })?;
+                write_job_last(job_id, latest_text.trim())?;
+            }
+        }
+        "turn/completed" => {
+            let status = params
+                .get("turn")
+                .and_then(|turn| turn.get("status"))
+                .and_then(app_server_status_label)
+                .unwrap_or("completed");
+            let failed = matches!(status, "failed" | "error" | "cancelled" | "canceled");
+            update_job(job_id, |job| {
+                job.status = if failed {
+                    JobStatus::Failed
+                } else {
+                    JobStatus::Completed
+                };
+                job.process_state = ProcessState::Exited;
+                job.pid = None;
+                job.active_worker_pid = None;
+                job.exit_code = Some(if failed { 1 } else { 0 });
+                job.completed_at = Some(now_iso());
+                job.blocking_request = None;
+                job.last_summary = Some(if latest_text.trim().is_empty() {
+                    if failed {
+                        format!("failed: {status}")
+                    } else {
+                        "completed".to_string()
+                    }
+                } else {
+                    truncate(latest_text.trim(), 120)
+                });
+                Ok(())
+            })?;
+            return Ok(true);
+        }
+        "serverRequest/resolved" => {
+            update_job(job_id, |job| {
+                job.status = JobStatus::Working;
+                job.blocking_request = None;
+                Ok(())
+            })?;
+        }
+        _ => {}
+    }
+
+    Ok(false)
+}
+
+fn handle_app_server_request(job_id: &str, request: ServerRequest) -> Result<()> {
+    let id = request.id.clone();
+    let method = request.method.clone();
+    let params = request.params.clone();
+    let message = format!("needs input: {method}");
+    append_job_event(
+        job_id,
+        &json!({
+            "type": "app_server_request",
+            "id": id.clone(),
+            "method": method.clone(),
+            "params": params.clone(),
+            "timestamp": now_iso()
+        }),
+    )?;
+    update_job(job_id, |job| {
+        job.status = JobStatus::NeedsInput;
+        job.last_summary = Some(message.clone());
+        job.blocking_request = Some(BlockingRequest {
+            kind: method.clone(),
+            message: message.clone(),
+            event: Some(json!({
+                "id": id,
+                "method": method,
+                "params": params
+            })),
+            created_at: now_iso(),
+        });
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn app_server_status_label(status: &Value) -> Option<&str> {
+    status
+        .as_str()
+        .or_else(|| status.get("type").and_then(Value::as_str))
 }
 
 pub fn handle_codex_line(job_id: &str, raw_line: &str) -> Result<()> {

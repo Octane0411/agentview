@@ -37,6 +37,7 @@ dependencies = [
 name = "agentview-core"
 version = "0.1.0"
 dependencies = [
+ "agentview-codex-app-server",
  "anyhow",
  "chrono",
  "libc",

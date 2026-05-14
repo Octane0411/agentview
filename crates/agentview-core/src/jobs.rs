@@ -15,6 +15,14 @@ pub struct DispatchOptions {
     pub profile: Option<String>,
     pub approval_policy: Option<String>,
     pub sandbox: Option<String>,
+    pub backend: DispatchBackend,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DispatchBackend {
+    #[default]
+    FallbackExec,
+    AppServer,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -109,7 +117,11 @@ pub fn dispatch_job(prompt: &str, options: DispatchOptions) -> Result<Job> {
         }),
     )?;
 
-    let child = spawn_worker(&job_id, "run", None, &job.cwd)?;
+    let worker_mode = match options.backend {
+        DispatchBackend::FallbackExec => "run",
+        DispatchBackend::AppServer => "app-server-run",
+    };
+    let child = spawn_worker(&job_id, worker_mode, None, &job.cwd)?;
     let pid = child.id();
     update_job(&job_id, |job| {
         job.pid = Some(pid);

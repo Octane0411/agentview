@@ -353,6 +353,8 @@ Exit criteria:
 
 ### Phase 2: Typed Runtime Bridge
 
+Status: in progress.
+
 Tasks:
 
 1. Add `crates/agentview-codex-runtime`.
@@ -376,6 +378,15 @@ Exit criteria:
 - `agentview run` can create an app-server-backed job without `codex exec`.
 - The row reaches `working`, then `completed`, `failed`, or `needs_input` from
   structured events.
+
+Current checkpoint:
+
+- Hidden `agentview run --app-server ...` creates a job through
+  `thread/start` and `turn/start` instead of `codex exec`.
+- The worker maps app-server notifications into AgentView job metadata and row
+  state.
+- The default user path still uses fallback `codex exec` until the supervisor
+  and hosted attach path are ready.
 
 ### Phase 3: Supervisor
 
