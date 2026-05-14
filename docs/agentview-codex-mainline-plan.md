@@ -1267,10 +1267,10 @@ Latest verified run:
 
 ```text
 date: 2026-05-14
-job: av_mp5d3xyo_1r5h
-thread: 019e2617-4090-7713-a6f3-977fc7edcd65
-turn: 019e2617-40d3-70f3-9427-394bba9138b7
-marker: AGENTVIEW_HOSTED_DETACH_E2E_1778755518_OK
+job: av_mp5gpal0_oa4
+thread: 019e2673-56fe-74b0-b149-92d89e95d1a4
+turn: 019e2673-574a-7921-b2d2-cf473b7b9173
+marker: AGENTVIEW_HOSTED_DETACH_E2E_1778761553_OK
 coverage: hosted detach/re-enter, same-turn continuity, dirty worktree rm refusal, force purge cleanup
 ```
 
