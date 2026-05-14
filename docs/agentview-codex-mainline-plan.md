@@ -523,14 +523,17 @@ Already implemented:
 - Supervisor app-server dispatch now uses a local websocket endpoint by
   default so a hosted helper can reconnect to the same running thread.
 - Patched Codex helper build script produces `target/debug/agentview-codex-hosted`.
+- Paired local install script builds `agentview` and `agentview-codex-hosted`
+  and installs both into the same bin directory, preserving sibling helper
+  resolution outside `target/debug`.
 - `agentview doctor` reports Codex CLI, `gh`, Rust, hosted helper resolution,
   the pinned Codex source ref, and the Codex patch queue count so packaging and
   update-flow problems are visible without opening the TUI.
 
 Still missing from the normal path:
 
-- Helper packaging/version-update workflow is script-driven but still not a
-  release/package installer.
+- Release packaging is still pending. The local paired installer covers
+  development installs only.
 - List TUI PTY automation covers enter/detach/re-enter and dirty-worktree
   remove protection. Fake websocket integration covers hosted attach while a
   job is in `needs_input`; deterministic real-Codex PTY coverage for that
@@ -593,6 +596,7 @@ agentview/
     update-codex.sh
     check-codex-patches.sh
     build-codex-hosted-helper.sh
+    install-local.sh
 ```
 
 Pinned source:
@@ -1258,12 +1262,12 @@ Regression tests:
 The next implementation work should follow this order:
 
 1. Formalize the paired local install path.
-   - Install `agentview` and `agentview-codex-hosted` into the same bin
+   - [x] Install `agentview` and `agentview-codex-hosted` into the same bin
      directory so sibling helper resolution works outside `target/debug`.
-   - Keep `tools/build-dev.sh`, `tools/check-codex-patches.sh`, and
+   - [x] Keep `tools/build-dev.sh`, `tools/check-codex-patches.sh`, and
      `tools/build-codex-hosted-helper.sh` as required development checks.
-   - Keep release packaging separate from this local installer until the helper
-     process is replaced or the release artifact layout is decided.
+   - [x] Keep release packaging separate from this local installer until the
+     helper process is replaced or the release artifact layout is decided.
 2. Expand hosted-view and PTY coverage around `needs_input`.
    - Keep the fake websocket integration for attach while a row is in
      `needs_input`.

@@ -130,8 +130,12 @@ tools/build-codex-hosted-helper.sh
 Install locally:
 
 ```bash
-cargo install --path crates/agentview-cli --force
+tools/install-local.sh
 ```
+
+This installs both `agentview` and `agentview-codex-hosted` into the same bin
+directory. Set `BIN_DIR=/path/to/bin` to install somewhere other than
+`${CARGO_HOME:-$HOME/.cargo}/bin`.
 
 ## Codex Source Updates
 
