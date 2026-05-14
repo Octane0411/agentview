@@ -54,19 +54,22 @@ Already implemented:
 - Fallback attach through `codex resume`, now guarded for active jobs.
 - `crates/agentview-codex-app-server`, a minimal stdio JSONL app-server client.
 - Hidden smoke command: `agentview __app-server-smoke`.
-- Hidden app-server dispatch path: `agentview run --app-server ...`.
+- Default app-server dispatch through supervisor for `agentview run` and TUI
+  submit.
+- Hidden fallback exec path: `agentview run --fallback-exec ...`.
 - `crates/agentview-codex-runtime`, the first supervisor-facing runtime bridge.
+- Hidden supervisor IPC with app-server run/reply/stop routing.
 - Codex source submodule pinned to `rust-v0.130.0`.
 - Hosted Codex TUI patch stored under `patches/codex`.
 - `crates/agentview-codex-hosted`, the AgentView-side hosted-session contract
   and helper invocation shape.
+- App-server-backed attach routes through the hosted helper contract.
 
 Still missing from the normal path:
 
-- Default `agentview run` and TUI dispatch do not use app-server yet.
-- AgentView does not keep a long-lived app-server runtime alive yet.
-- `Enter` still uses fallback attach for completed jobs.
-- No hosted Codex TUI entrypoint is wired into AgentView yet.
+- Real hosted Codex helper/library binary is not wired into the workspace yet.
+- Live reply to a running app-server turn is not wired yet.
+- Real Codex E2E for hosted attach/detach is still pending.
 
 ## How AgentView Wraps Codex Source
 
@@ -437,7 +440,7 @@ Exit criteria:
 
 Current checkpoint:
 
-- Hidden `agentview run --app-server ...` creates a job through
+- `agentview run` creates an app-server-backed job through supervisor
   `thread/start` and `turn/start` instead of `codex exec`.
 - `crates/agentview-codex-runtime` owns app-server process startup,
   `thread/start`, `thread/resume`, `turn/start`, and runtime event delivery.
@@ -454,8 +457,7 @@ Current checkpoint:
 - Fake app-server integration tests cover app-server dispatch and follow-up
   replies, including guards against fallback `codex exec` / `codex resume`
   output on that path.
-- The default user path still uses fallback `codex exec` until the supervisor
-  and hosted attach path are ready.
+- The fallback `codex exec` path is now behind hidden `--fallback-exec`.
 
 ### Phase 3: Supervisor
 
@@ -541,7 +543,8 @@ Tasks:
    input.
 2. [x] Make hosted view the default `Enter` behavior for app-server-backed jobs.
 3. [x] Hide fallback `codex exec/resume` behind an explicit debug flag.
-4. Remove misleading copy that suggests fallback attach has Agent View parity.
+4. [x] Remove misleading copy that suggests fallback attach has Agent View
+   parity.
 5. [x] Update tests to fail if normal path invokes `codex exec` or
    `codex resume`.
 
@@ -555,6 +558,9 @@ Current checkpoint:
   path available for regression coverage and emergency debugging.
 - The normal app-server integration test dispatches without `--app-server` and
   asserts fallback `codex exec` / `codex resume` output is absent.
+- CLI command descriptions say `attach` opens a conversation; fallback
+  `codex resume` copy is kept only for fallback implementation internals and
+  tests.
 
 Exit criteria:
 

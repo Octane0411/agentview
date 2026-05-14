@@ -402,4 +402,12 @@ mod tests {
         assert_eq!(parsed.profile.as_deref(), Some("fast"));
         assert_eq!(parsed.prompt, "summarize");
     }
+
+    #[test]
+    fn default_dispatch_backend_is_app_server() {
+        assert_eq!(
+            DispatchOptions::default().backend,
+            DispatchBackend::AppServer
+        );
+    }
 }

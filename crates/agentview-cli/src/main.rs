@@ -58,7 +58,7 @@ enum Commands {
         job_id: String,
         limit: Option<usize>,
     },
-    #[command(about = "Resume full Codex conversation")]
+    #[command(about = "Open full Codex conversation")]
     Attach { job_id: String },
     #[command(hide = true, name = "__hosted-attach")]
     HostedAttach {
@@ -98,7 +98,7 @@ enum Commands {
     },
     #[command(about = "Pin or unpin a job")]
     Pin { job_id: String },
-    #[command(about = "Resume a Codex thread in the background")]
+    #[command(about = "Send a follow-up turn in the background")]
     Respawn { job_id: String, prompt: Vec<String> },
     #[command(about = "Check local dependencies")]
     Doctor,
