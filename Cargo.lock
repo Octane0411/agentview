@@ -34,10 +34,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentview-core"
+name = "agentview-codex-runtime"
 version = "0.1.0"
 dependencies = [
  "agentview-codex-app-server",
+ "anyhow",
+ "tempfile",
+]
+
+[[package]]
+name = "agentview-core"
+version = "0.1.0"
+dependencies = [
+ "agentview-codex-runtime",
  "anyhow",
  "chrono",
  "libc",

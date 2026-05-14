@@ -357,7 +357,7 @@ Status: in progress.
 
 Tasks:
 
-1. Add `crates/agentview-codex-runtime`.
+1. [x] Add `crates/agentview-codex-runtime`.
 2. Replace hand-mapped app-server JSON where practical with
    `codex-app-server-protocol` types.
 3. Decide runtime mode:
@@ -383,6 +383,8 @@ Current checkpoint:
 
 - Hidden `agentview run --app-server ...` creates a job through
   `thread/start` and `turn/start` instead of `codex exec`.
+- `crates/agentview-codex-runtime` owns app-server process startup,
+  `thread/start`, `turn/start`, and runtime event delivery.
 - The worker maps app-server notifications into AgentView job metadata and row
   state.
 - The default user path still uses fallback `codex exec` until the supervisor

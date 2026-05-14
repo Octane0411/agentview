@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-agentview-codex-app-server.workspace = true
+agentview-codex-runtime.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 libc.workspace = true

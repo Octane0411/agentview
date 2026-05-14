@@ -6,8 +6,8 @@ use crate::util::{
     command_exists, event_failed, event_needs_input, extract_pr_refs, extract_thread_id, home_dir,
     merge_pr_refs, now_iso, path_exists, strip_ansi, summarize_event, truncate,
 };
-use agentview_codex_app_server::{
-    AppServerClient, AppServerEvent, Notification, ServerRequest, ThreadStartOptions,
+use agentview_codex_runtime::{
+    CodexRuntime, Notification, RuntimeEvent, RuntimeTurnOptions, ServerRequest,
 };
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 pub fn assert_codex_available() -> Result<()> {
     if command_exists("codex") {
@@ -238,72 +237,70 @@ pub fn run_codex_app_server_turn(job_id: &str, prompt: &str) -> Result<()> {
         Ok(())
     })?;
 
-    let mut client = AppServerClient::spawn_stdio()?;
-    let initialized = client.initialize()?;
-    append_job_event(
-        job_id,
-        &json!({
-            "type": "app_server_initialized",
-            "userAgent": initialized.user_agent,
-            "codexHome": initialized.codex_home,
-            "timestamp": now_iso()
-        }),
-    )?;
-
-    let started = client.start_thread(ThreadStartOptions {
-        cwd: Some(PathBuf::from(&job.cwd)),
+    let options = RuntimeTurnOptions {
+        cwd: PathBuf::from(&job.cwd),
         model: job.model.clone(),
-        approval_policy: Some(job.approval_policy.clone()),
-        sandbox: Some(job.sandbox.clone()),
-    })?;
-    let thread_id = started.thread.id.clone();
-    update_job(job_id, |job| {
-        job.codex_thread_id = Some(thread_id.clone());
-        job.last_summary = Some("Codex thread started".to_string());
-        Ok(())
-    })?;
-    append_job_event(
-        job_id,
-        &json!({
-            "type": "app_server_thread_started",
-            "threadId": thread_id.clone(),
-            "timestamp": now_iso()
-        }),
-    )?;
-
-    let turn = client.start_text_turn(&thread_id, prompt)?;
-    append_job_event(
-        job_id,
-        &json!({
-            "type": "app_server_turn_started",
-            "threadId": thread_id,
-            "turnId": turn.turn.id,
-            "timestamp": now_iso()
-        }),
-    )?;
-    update_job(job_id, |job| {
-        job.status = JobStatus::Working;
-        job.last_summary = Some("Codex turn started".to_string());
-        Ok(())
-    })?;
+        approval_policy: job.approval_policy.clone(),
+        sandbox: job.sandbox.clone(),
+    };
 
     let mut latest_text = String::new();
-    loop {
-        match client.next_event(Duration::from_millis(250))? {
-            Some(AppServerEvent::Notification(notification)) => {
-                if handle_app_server_notification(job_id, notification, &mut latest_text)? {
-                    break;
-                }
-            }
-            Some(AppServerEvent::ServerRequest(request)) => {
-                handle_app_server_request(job_id, request)?;
-            }
-            None => {}
-        }
-    }
+    CodexRuntime::default().run_text_turn(options, prompt, |event| {
+        handle_runtime_event(job_id, event, &mut latest_text)
+    })
+}
 
-    client.shutdown()?;
-    Ok(())
+fn handle_runtime_event(job_id: &str, event: RuntimeEvent, latest_text: &mut String) -> Result<()> {
+    match event {
+        RuntimeEvent::Initialized {
+            user_agent,
+            codex_home,
+        } => append_job_event(
+            job_id,
+            &json!({
+                "type": "app_server_initialized",
+                "userAgent": user_agent,
+                "codexHome": codex_home,
+                "timestamp": now_iso()
+            }),
+        ),
+        RuntimeEvent::ThreadStarted { thread_id } => {
+            update_job(job_id, |job| {
+                job.codex_thread_id = Some(thread_id.clone());
+                job.last_summary = Some("Codex thread started".to_string());
+                Ok(())
+            })?;
+            append_job_event(
+                job_id,
+                &json!({
+                    "type": "app_server_thread_started",
+                    "threadId": thread_id,
+                    "timestamp": now_iso()
+                }),
+            )
+        }
+        RuntimeEvent::TurnStarted { thread_id, turn_id } => {
+            append_job_event(
+                job_id,
+                &json!({
+                    "type": "app_server_turn_started",
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "timestamp": now_iso()
+                }),
+            )?;
+            update_job(job_id, |job| {
+                job.status = JobStatus::Working;
+                job.last_summary = Some("Codex turn started".to_string());
+                Ok(())
+            })?;
+            Ok(())
+        }
+        RuntimeEvent::Notification(notification) => {
+            handle_app_server_notification(job_id, notification, latest_text).map(|_| ())
+        }
+        RuntimeEvent::ServerRequest(request) => handle_app_server_request(job_id, request),
+    }
 }
 
 fn handle_app_server_notification(
