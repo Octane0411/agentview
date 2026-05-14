@@ -1,4 +1,6 @@
-use agentview_codex_app_server::{AppServerClient, AppServerEvent, ThreadStartOptions};
+use agentview_codex_app_server::{
+    AppServerClient, AppServerEvent, ThreadResumeOptions, ThreadStartOptions,
+};
 pub use agentview_codex_app_server::{Notification, ServerRequest};
 use anyhow::Result;
 use std::path::PathBuf;
@@ -20,6 +22,9 @@ pub enum RuntimeEvent {
         codex_home: PathBuf,
     },
     ThreadStarted {
+        thread_id: String,
+    },
+    ThreadResumed {
         thread_id: String,
     },
     TurnStarted {
@@ -75,9 +80,54 @@ impl CodexRuntime {
             thread_id: thread_id.clone(),
         })?;
 
+        self.start_turn_and_drain(&mut client, thread_id, prompt, &mut on_event)?;
+
+        client.shutdown()?;
+        Ok(())
+    }
+
+    pub fn run_text_turn_on_thread(
+        &self,
+        thread_id: &str,
+        options: RuntimeTurnOptions,
+        prompt: &str,
+        mut on_event: impl FnMut(RuntimeEvent) -> Result<()>,
+    ) -> Result<()> {
+        let mut client = self.spawn_client()?;
+        let initialized = client.initialize()?;
+        on_event(RuntimeEvent::Initialized {
+            user_agent: initialized.user_agent,
+            codex_home: initialized.codex_home,
+        })?;
+
+        let resumed = client.resume_thread(ThreadResumeOptions {
+            thread_id: thread_id.to_string(),
+            cwd: Some(options.cwd),
+            model: options.model,
+            approval_policy: Some(options.approval_policy),
+            sandbox: Some(options.sandbox),
+        })?;
+        let thread_id = resumed.thread.id.clone();
+        on_event(RuntimeEvent::ThreadResumed {
+            thread_id: thread_id.clone(),
+        })?;
+
+        self.start_turn_and_drain(&mut client, thread_id, prompt, &mut on_event)?;
+
+        client.shutdown()?;
+        Ok(())
+    }
+
+    fn start_turn_and_drain(
+        &self,
+        client: &mut AppServerClient,
+        thread_id: String,
+        prompt: &str,
+        on_event: &mut impl FnMut(RuntimeEvent) -> Result<()>,
+    ) -> Result<()> {
         let turn = client.start_text_turn(&thread_id, prompt)?;
         on_event(RuntimeEvent::TurnStarted {
-            thread_id,
+            thread_id: thread_id.clone(),
             turn_id: turn.turn.id,
         })?;
 
@@ -97,7 +147,6 @@ impl CodexRuntime {
             }
         }
 
-        client.shutdown()?;
         Ok(())
     }
 
@@ -162,6 +211,42 @@ mod tests {
         )));
     }
 
+    #[test]
+    fn run_text_turn_on_thread_resumes_then_starts_turn() {
+        let temp = TempDir::new().unwrap();
+        let codex = fake_codex(&temp);
+
+        let mut events = Vec::new();
+        CodexRuntime::default()
+            .with_codex_binary(codex)
+            .run_text_turn_on_thread(
+                "thread-1",
+                RuntimeTurnOptions {
+                    cwd: temp.path().to_path_buf(),
+                    model: None,
+                    approval_policy: "never".to_string(),
+                    sandbox: "workspace-write".to_string(),
+                },
+                "follow up",
+                |event| {
+                    events.push(event);
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(events[0], RuntimeEvent::Initialized { .. }));
+        assert!(matches!(
+            events[1],
+            RuntimeEvent::ThreadResumed { ref thread_id } if thread_id == "thread-1"
+        ));
+        assert!(matches!(
+            events[2],
+            RuntimeEvent::TurnStarted { ref thread_id, ref turn_id }
+                if thread_id == "thread-1" && turn_id == "turn-1"
+        ));
+    }
+
     fn fake_codex(temp: &TempDir) -> PathBuf {
         let bin = temp.path().join("bin");
         fs::create_dir_all(&bin).unwrap();
@@ -181,11 +266,16 @@ fi
 IFS= read -r init
 printf '%s\n' '{{"id":0,"result":{{"userAgent":"fake-codex/0.0.0","codexHome":"{codex_home}","platformFamily":"unix","platformOs":"macos"}}}}'
 IFS= read -r initialized
-IFS= read -r thread_start
+IFS= read -r thread_request
+case "$thread_request" in
+  *'"method":"thread/start"'*) thread_method="started" ;;
+  *'"method":"thread/resume"'*) thread_method="resumed" ;;
+  *) printf '%s\n' "expected thread start/resume, got: $thread_request" >&2; exit 3 ;;
+esac
 printf '%s\n' '{{"id":1,"result":{{"thread":{{"id":"thread-1","sessionId":"thread-1","preview":"","status":"running","cwd":"{cwd}","name":null}},"model":"fake-model","modelProvider":"fake-provider","serviceTier":null,"cwd":"{cwd}"}}}}'
 IFS= read -r turn_start
 printf '%s\n' '{{"id":2,"result":{{"turn":{{"id":"turn-1","status":"running","startedAt":0,"completedAt":null,"durationMs":null}}}}}}'
-printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"done"}}}}'
+printf '%s\n' "{{\"method\":\"item/agentMessage/delta\",\"params\":{{\"threadId\":\"thread-1\",\"turnId\":\"turn-1\",\"itemId\":\"item-1\",\"delta\":\"$thread_method\"}}}}"
 printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"completed","startedAt":0,"completedAt":1,"durationMs":1}}}}}}'
 "#,
                 codex_home = codex_home.display(),

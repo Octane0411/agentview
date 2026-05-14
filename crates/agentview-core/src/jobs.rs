@@ -149,14 +149,23 @@ pub fn dispatch_job(prompt: &str, options: DispatchOptions) -> Result<Job> {
 pub fn reply_to_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
     let job = require_job(job_id)?;
     if job.process_state == ProcessState::Alive && job.pid.is_some() {
-        bail!(
-            "Live replies to a running Codex exec session require the app-server backend. Wait for this turn to finish, or stop it and resume."
-        );
+        match job.backend {
+            JobBackend::AppServer => bail!(
+                "Live replies to a running app-server job require the AgentView supervisor. Wait for this turn to finish, or stop it and reply after completion."
+            ),
+            JobBackend::FallbackExec => bail!(
+                "Live replies to a running Codex exec session require the app-server backend. Wait for this turn to finish, or stop it and resume."
+            ),
+        }
     }
     if job.codex_thread_id.is_none() {
         bail!("Job {job_id} has no Codex thread id yet");
     }
-    let child = spawn_worker(job_id, "reply", Some(prompt), &job.cwd)?;
+    let worker_mode = match job.backend {
+        JobBackend::FallbackExec => "reply",
+        JobBackend::AppServer => "app-server-reply",
+    };
+    let child = spawn_worker(job_id, worker_mode, Some(prompt), &job.cwd)?;
     let pid = child.id();
     update_job(job_id, |job| {
         job.status = JobStatus::Working;
@@ -173,10 +182,17 @@ pub fn reply_to_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
 
 pub fn respawn_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
     let job = require_job(job_id)?;
+    if job.process_state == ProcessState::Alive && job.pid.is_some() {
+        bail!("Job {job_id} is already running");
+    }
     if job.codex_thread_id.is_none() {
         bail!("Job {job_id} has no Codex thread id yet");
     }
-    let child = spawn_worker(job_id, "resume", Some(prompt), &job.cwd)?;
+    let worker_mode = match job.backend {
+        JobBackend::FallbackExec => "resume",
+        JobBackend::AppServer => "app-server-resume",
+    };
+    let child = spawn_worker(job_id, worker_mode, Some(prompt), &job.cwd)?;
     let pid = child.id();
     update_job(job_id, |job| {
         job.status = JobStatus::Working;

@@ -28,9 +28,28 @@ pub struct ThreadStartOptions {
     pub sandbox: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ThreadResumeOptions {
+    pub thread_id: String,
+    pub cwd: Option<PathBuf>,
+    pub model: Option<String>,
+    pub approval_policy: Option<String>,
+    pub sandbox: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadStartResponse {
+    pub thread: ThreadSummary,
+    pub model: String,
+    pub model_provider: String,
+    pub service_tier: Option<String>,
+    pub cwd: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadResumeResponse {
     pub thread: ThreadSummary,
     pub model: String,
     pub model_provider: String,
@@ -208,6 +227,26 @@ impl AppServerClient {
 
         let result = self.request("thread/start", Value::Object(params))?;
         serde_json::from_value(result).context("failed to parse thread/start response")
+    }
+
+    pub fn resume_thread(&mut self, options: ThreadResumeOptions) -> Result<ThreadResumeResponse> {
+        let mut params = Map::new();
+        params.insert("threadId".to_string(), Value::String(options.thread_id));
+        if let Some(cwd) = options.cwd {
+            params.insert("cwd".to_string(), path_value(&cwd));
+        }
+        if let Some(model) = options.model {
+            params.insert("model".to_string(), Value::String(model));
+        }
+        if let Some(approval_policy) = options.approval_policy {
+            params.insert("approvalPolicy".to_string(), Value::String(approval_policy));
+        }
+        if let Some(sandbox) = options.sandbox {
+            params.insert("sandbox".to_string(), Value::String(sandbox));
+        }
+
+        let result = self.request("thread/resume", Value::Object(params))?;
+        serde_json::from_value(result).context("failed to parse thread/resume response")
     }
 
     pub fn start_text_turn(&mut self, thread_id: &str, prompt: &str) -> Result<TurnStartResponse> {

@@ -440,9 +440,15 @@ Current checkpoint:
 - Hidden `agentview run --app-server ...` creates a job through
   `thread/start` and `turn/start` instead of `codex exec`.
 - `crates/agentview-codex-runtime` owns app-server process startup,
-  `thread/start`, `turn/start`, and runtime event delivery.
+  `thread/start`, `thread/resume`, `turn/start`, and runtime event delivery.
+- `agentview reply` / `agentview respawn` on app-server-backed jobs now send
+  the follow-up turn through `thread/resume` plus `turn/start`, instead of
+  falling back to `codex exec resume`.
 - The worker maps app-server notifications into AgentView job metadata and row
   state.
+- Fake app-server integration tests cover app-server dispatch and follow-up
+  replies, including guards against fallback `codex exec` / `codex resume`
+  output on that path.
 - The default user path still uses fallback `codex exec` until the supervisor
   and hosted attach path are ready.
 
@@ -570,11 +576,11 @@ The next implementation work should follow this order.
 
 1. Complete the app-server-backed turn lifecycle in
    `agentview-codex-runtime`.
-   - Add `thread/resume` plus follow-up `turn/start` for `agentview reply`.
+   - [x] Add `thread/resume` plus follow-up `turn/start` for `agentview reply`.
    - Add interrupt/stop support through app-server once the request shape is
      confirmed.
-   - Add fake app-server tests that fail if the app-server path shells out to
-     `codex exec` or `codex resume`.
+   - [x] Add fake app-server tests that fail if the app-server path shells out
+     to `codex exec` or `codex resume`.
 2. Add the supervisor boundary.
    - Keep the Codex app-server process alive outside the visible TUI screen.
    - Persist job id to thread id mappings.

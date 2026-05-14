@@ -223,6 +223,23 @@ pub fn run_codex_turn(job_id: &str, prompt: &str, resume: bool) -> Result<()> {
 }
 
 pub fn run_codex_app_server_turn(job_id: &str, prompt: &str) -> Result<()> {
+    run_codex_app_server_turn_inner(job_id, prompt, None)
+}
+
+pub fn run_codex_app_server_reply(job_id: &str, prompt: &str) -> Result<()> {
+    let job = require_job(job_id)?;
+    let thread_id = job
+        .codex_thread_id
+        .clone()
+        .with_context(|| format!("Job {job_id} has no Codex thread id yet"))?;
+    run_codex_app_server_turn_inner(job_id, prompt, Some(thread_id))
+}
+
+fn run_codex_app_server_turn_inner(
+    job_id: &str,
+    prompt: &str,
+    resume_thread_id: Option<String>,
+) -> Result<()> {
     assert_codex_available()?;
     let job = require_job(job_id)?;
     update_job(job_id, |job| {
@@ -231,7 +248,11 @@ pub fn run_codex_app_server_turn(job_id: &str, prompt: &str) -> Result<()> {
         job.pid = Some(std::process::id());
         job.active_worker_pid = Some(std::process::id());
         job.completed_at = None;
-        job.last_summary = Some("Starting Codex app-server session".to_string());
+        job.last_summary = Some(if resume_thread_id.is_some() {
+            "Resuming Codex app-server thread".to_string()
+        } else {
+            "Starting Codex app-server session".to_string()
+        });
         job.blocking_request = None;
         job.error = None;
         Ok(())
@@ -245,9 +266,16 @@ pub fn run_codex_app_server_turn(job_id: &str, prompt: &str) -> Result<()> {
     };
 
     let mut latest_text = String::new();
-    CodexRuntime::default().run_text_turn(options, prompt, |event| {
-        handle_runtime_event(job_id, event, &mut latest_text)
-    })
+    let runtime = CodexRuntime::default();
+    if let Some(thread_id) = resume_thread_id {
+        runtime.run_text_turn_on_thread(&thread_id, options, prompt, |event| {
+            handle_runtime_event(job_id, event, &mut latest_text)
+        })
+    } else {
+        runtime.run_text_turn(options, prompt, |event| {
+            handle_runtime_event(job_id, event, &mut latest_text)
+        })
+    }
 }
 
 fn handle_runtime_event(job_id: &str, event: RuntimeEvent, latest_text: &mut String) -> Result<()> {
@@ -274,6 +302,21 @@ fn handle_runtime_event(job_id: &str, event: RuntimeEvent, latest_text: &mut Str
                 job_id,
                 &json!({
                     "type": "app_server_thread_started",
+                    "threadId": thread_id,
+                    "timestamp": now_iso()
+                }),
+            )
+        }
+        RuntimeEvent::ThreadResumed { thread_id } => {
+            update_job(job_id, |job| {
+                job.codex_thread_id = Some(thread_id.clone());
+                job.last_summary = Some("Codex thread resumed".to_string());
+                Ok(())
+            })?;
+            append_job_event(
+                job_id,
+                &json!({
+                    "type": "app_server_thread_resumed",
                     "threadId": thread_id,
                     "timestamp": now_iso()
                 }),

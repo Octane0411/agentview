@@ -149,6 +149,36 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
     assert!(logs_stdout.contains("app_server_turn_started"));
     assert!(!logs_stdout.contains("started fake codex"));
 
+    let reply = env
+        .agentview(&store, &codex)
+        .args(["reply", &job_id, "follow up through app-server"])
+        .output()
+        .unwrap();
+    assert!(
+        reply.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reply.stderr)
+    );
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env
+            .agentview(&store, &codex)
+            .args(["peek", &job_id])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).contains("completed fake app-server reply")
+    });
+
+    let logs = env
+        .agentview(&store, &codex)
+        .args(["logs", &job_id])
+        .output()
+        .unwrap();
+    assert!(logs.status.success());
+    let logs_stdout = String::from_utf8_lossy(&logs.stdout);
+    assert!(logs_stdout.contains("app_server_thread_resumed"));
+    assert!(!logs_stdout.contains("resumed fake codex"));
+
     let store_json: Value =
         serde_json::from_str(&fs::read_to_string(store.path().join("agentview.json")).unwrap())
             .unwrap();
@@ -223,12 +253,15 @@ if [ "${{1:-}}" = "app-server" ]; then
     *) printf '%s\n' "expected initialized, got: $initialized" >&2; exit 4 ;;
   esac
 
-  IFS= read -r thread_start
-  case "$thread_start" in
-    *'"method":"thread/start"'*) ;;
-    *) printf '%s\n' "expected thread/start, got: $thread_start" >&2; exit 5 ;;
+  IFS= read -r thread_request
+  case "$thread_request" in
+    *'"method":"thread/start"'*) thread_mode="start"; delta="completed fake app-server" ;;
+    *'"method":"thread/resume"'*) thread_mode="resume"; delta="completed fake app-server reply" ;;
+    *) printf '%s\n' "expected thread/start or thread/resume, got: $thread_request" >&2; exit 5 ;;
   esac
-  printf '%s\n' "{{\"method\":\"thread/started\",\"params\":{{\"thread\":{{\"id\":\"{THREAD_ID}\",\"sessionId\":\"{THREAD_ID}\",\"preview\":\"\",\"status\":\"running\",\"cwd\":\"$cwd\",\"name\":null}}}}}}"
+  if [ "$thread_mode" = "start" ]; then
+    printf '%s\n' "{{\"method\":\"thread/started\",\"params\":{{\"thread\":{{\"id\":\"{THREAD_ID}\",\"sessionId\":\"{THREAD_ID}\",\"preview\":\"\",\"status\":\"running\",\"cwd\":\"$cwd\",\"name\":null}}}}}}"
+  fi
   printf '%s\n' "{{\"id\":1,\"result\":{{\"thread\":{{\"id\":\"{THREAD_ID}\",\"sessionId\":\"{THREAD_ID}\",\"preview\":\"\",\"status\":\"running\",\"cwd\":\"$cwd\",\"name\":null}},\"model\":\"fake-model\",\"modelProvider\":\"fake-provider\",\"serviceTier\":null,\"cwd\":\"$cwd\"}}}}"
 
   IFS= read -r turn_start
@@ -238,7 +271,7 @@ if [ "${{1:-}}" = "app-server" ]; then
   esac
   printf '%s\n' '{{"id":2,"result":{{"turn":{{"id":"turn-1","status":"running","startedAt":0,"completedAt":null,"durationMs":null}}}}}}'
   printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"{THREAD_ID}","turn":{{"id":"turn-1","status":"running","startedAt":0,"completedAt":null,"durationMs":null}}}}}}'
-  printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"{THREAD_ID}","turnId":"turn-1","itemId":"item-1","delta":"completed fake app-server"}}}}'
+  printf '%s\n' "{{\"method\":\"item/agentMessage/delta\",\"params\":{{\"threadId\":\"{THREAD_ID}\",\"turnId\":\"turn-1\",\"itemId\":\"item-1\",\"delta\":\"$delta\"}}}}"
   printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"{THREAD_ID}","turn":{{"id":"turn-1","status":"completed","startedAt":0,"completedAt":1,"durationMs":1}}}}}}'
   exit 0
 fi
