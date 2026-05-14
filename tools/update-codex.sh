@@ -3,7 +3,18 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEX_DIR="$ROOT_DIR/third_party/codex"
-REF="${1:-rust-v0.130.0}"
+
+usage() {
+  echo "usage: tools/update-codex.sh <tag-or-commit>" >&2
+  echo "set AGENTVIEW_RUN_REAL_CODEX_E2E=1 to also run tools/e2e-hosted-detach.sh" >&2
+}
+
+if [[ "$#" -ne 1 ]]; then
+  usage
+  exit 2
+fi
+
+REF="$1"
 
 if [[ ! -d "$CODEX_DIR/.git" && ! -f "$CODEX_DIR/.git" ]]; then
   git -C "$ROOT_DIR" submodule update --init --recursive third_party/codex
@@ -20,7 +31,21 @@ git -C "$CODEX_DIR" fetch --tags origin
 git -C "$CODEX_DIR" checkout "$REF"
 
 "$ROOT_DIR/tools/check-codex-patches.sh"
-"$ROOT_DIR/tools/build-codex-hosted-helper.sh" >/dev/null
+HOSTED_HELPER="$("$ROOT_DIR/tools/build-codex-hosted-helper.sh")"
+
+cargo test \
+  --manifest-path "$ROOT_DIR/target/agentview-codex-patched/codex/codex-rs/Cargo.toml" \
+  -p codex-tui \
+  hosted_detach \
+  --lib
+
+cargo test --workspace --manifest-path "$ROOT_DIR/Cargo.toml"
+
+if [[ "${AGENTVIEW_RUN_REAL_CODEX_E2E:-}" == "1" ]]; then
+  "$ROOT_DIR/tools/e2e-hosted-detach.sh"
+else
+  echo "real Codex E2E skipped; run with AGENTVIEW_RUN_REAL_CODEX_E2E=1 to consume tokens and verify hosted detach"
+fi
 
 echo "codex ref: $(git -C "$CODEX_DIR" rev-parse HEAD)"
-echo "hosted helper: $ROOT_DIR/target/debug/agentview-codex-hosted"
+echo "hosted helper: $HOSTED_HELPER"

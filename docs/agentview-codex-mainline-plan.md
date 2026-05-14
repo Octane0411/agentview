@@ -1091,6 +1091,12 @@ Current checkpoint:
   upstream submodule, verifies `patches/codex` with
   `tools/check-codex-patches.sh`, and rebuilds the hosted helper from a patched
   target copy.
+- `tools/update-codex.sh <ref>` also runs the patched Codex hosted-detach test
+  and `cargo test --workspace`. Real-Codex PTY E2E remains opt-in through
+  `AGENTVIEW_RUN_REAL_CODEX_E2E=1` because it consumes live Codex tokens.
+- The tightened update flow was verified on 2026-05-14 with
+  `tools/update-codex.sh rust-v0.130.0`; it left `third_party/codex` clean at
+  `58573da43ab697e8b79f152c53df4b42230395a8`.
 - `crates/agentview-codex-hosted` owns the AgentView-side hosted session
   contract and temporary helper invocation shape.
 - `HostedHelper::from_env_or_default()` resolves the helper from
@@ -1279,9 +1285,11 @@ The next implementation work should follow this order:
    - Continue verifying that list-level reply can resolve the pending request
      after hosted attach.
 3. Tighten the Codex update flow.
-   - Use `tools/update-codex.sh <ref>` to bump `third_party/codex` without
+   - [x] Use `tools/update-codex.sh <ref>` to bump `third_party/codex` without
      leaving patch changes applied in the submodule.
-   - Document the tested Codex CLI/source version after every bump.
+   - [x] Run patch check, hosted helper build, patched Codex hosted-detach
+     test, and AgentView workspace tests from the update script.
+   - [x] Document the tested Codex CLI/source version after every bump.
 4. Then fill the remaining parity gaps.
    - Keep running and recording the real-Codex PTY E2E after hosted-session
      changes.

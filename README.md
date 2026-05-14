@@ -161,8 +161,13 @@ tools/check-codex-patches.sh
 To update the Codex pin and rebuild the hosted helper:
 
 ```bash
-tools/update-codex.sh rust-v0.130.0
+tools/update-codex.sh <tag-or-commit>
 ```
+
+The update script verifies the Codex patch queue, rebuilds the hosted helper,
+runs the patched Codex hosted-detach test, and runs `cargo test --workspace`.
+Set `AGENTVIEW_RUN_REAL_CODEX_E2E=1` to also run the real-Codex PTY flow, which
+consumes real Codex tokens.
 
 Real-Codex PTY verification:
 

@@ -13,7 +13,10 @@ Patch rules:
 - `tools/build-codex-hosted-helper.sh` must build when patches change hosted
   TUI behavior or the helper binary.
 - `tools/update-codex.sh <ref>` is the supported way to move Codex to a new tag
-  or commit and re-check the patch queue.
+  or commit. It re-checks the patch queue, rebuilds the hosted helper, runs the
+  patched Codex hosted-detach test, and runs the AgentView workspace tests.
+- Set `AGENTVIEW_RUN_REAL_CODEX_E2E=1` when the update should also run the
+  real-Codex PTY hosted detach flow.
 
 Expected initial patches:
 
