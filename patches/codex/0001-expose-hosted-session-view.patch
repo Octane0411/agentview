@@ -1,0 +1,335 @@
+diff --git a/codex-rs/tui/src/app.rs b/codex-rs/tui/src/app.rs
+index d6d65b04a4..b3caf07e96 100644
+--- a/codex-rs/tui/src/app.rs
++++ b/codex-rs/tui/src/app.rs
+@@ -360,9 +360,15 @@ pub(crate) enum AppRunControl {
+ #[derive(Debug, Clone)]
+ pub enum ExitReason {
+     UserRequested,
++    Detached,
+     Fatal(String),
+ }
+ 
++#[derive(Debug, Clone, Copy, Default)]
++pub struct AppRunOptions {
++    pub hosted_detach_enabled: bool,
++}
++
+ fn session_summary(
+     token_usage: TokenUsage,
+     thread_id: Option<ThreadId>,
+@@ -489,6 +495,7 @@ pub(crate) struct App {
+     /// This is thread-scoped state (`Option<ThreadId>`) instead of a global bool
+     /// so shutdown events from other threads still take the normal failover path.
+     pending_shutdown_exit_thread_id: Option<ThreadId>,
++    hosted_detach_enabled: bool,
+ 
+     windows_sandbox: WindowsSandboxState,
+ 
+@@ -617,6 +624,7 @@ impl App {
+         remote_app_server_auth_token: Option<String>,
+         state_db: Option<StateDbHandle>,
+         environment_manager: Arc<EnvironmentManager>,
++        run_options: AppRunOptions,
+     ) -> Result<AppExitInfo> {
+         use tokio_stream::StreamExt;
+         let (app_event_tx, mut app_event_rx) = unbounded_channel();
+@@ -895,6 +903,7 @@ See the Codex keymap documentation for supported actions and examples."
+             remote_app_server_auth_token,
+             pending_update_action: None,
+             pending_shutdown_exit_thread_id: None,
++            hosted_detach_enabled: run_options.hosted_detach_enabled,
+             windows_sandbox: WindowsSandboxState::default(),
+             thread_event_channels: HashMap::new(),
+             thread_event_listener_tasks: HashMap::new(),
+@@ -1049,8 +1058,10 @@ See the Codex keymap documentation for supported actions and examples."
+                 }
+             }
+         };
+-        if let Err(err) = app_server.shutdown().await {
+-            tracing::warn!(error = %err, "failed to shut down embedded app server");
++        if !matches!(exit_reason_result, Ok(ExitReason::Detached)) {
++            if let Err(err) = app_server.shutdown().await {
++                tracing::warn!(error = %err, "failed to shut down embedded app server");
++            }
+         }
+         let clear_result = tui.terminal.clear();
+         let exit_reason = match exit_reason_result {
+diff --git a/codex-rs/tui/src/app/event_dispatch.rs b/codex-rs/tui/src/app/event_dispatch.rs
+index bfe8dc4b24..6971247705 100644
+--- a/codex-rs/tui/src/app/event_dispatch.rs
++++ b/codex-rs/tui/src/app/event_dispatch.rs
+@@ -2123,6 +2123,10 @@ impl App {
+                 self.pending_shutdown_exit_thread_id = None;
+                 AppRunControl::Exit(ExitReason::UserRequested)
+             }
++            ExitMode::Detach => {
++                self.pending_shutdown_exit_thread_id = None;
++                AppRunControl::Exit(ExitReason::Detached)
++            }
+             ExitMode::Immediate => {
+                 self.pending_shutdown_exit_thread_id = None;
+                 AppRunControl::Exit(ExitReason::UserRequested)
+diff --git a/codex-rs/tui/src/app/input.rs b/codex-rs/tui/src/app/input.rs
+index 905f62f86f..e3a6ec0da4 100644
+--- a/codex-rs/tui/src/app/input.rs
++++ b/codex-rs/tui/src/app/input.rs
+@@ -100,6 +100,10 @@ impl App {
+         // editing behavior for moving across words inside a draft.
+         let allow_agent_word_motion_fallback = !self.enhanced_keys_supported
+             && self.chat_widget.composer_text_with_pending().is_empty();
++        if self.should_host_detach(key_event) {
++            self.app_event_tx.send(AppEvent::Exit(ExitMode::Detach));
++            return;
++        }
+         if self.overlay.is_none()
+             && self.chat_widget.no_modal_or_popup_active()
+             // Alt+Left/Right are also natural word-motion keys in the composer. Keep agent
+@@ -261,14 +265,35 @@ impl App {
+         self.overlay.is_none() && self.chat_widget.no_modal_or_popup_active()
+     }
+ 
++    fn should_host_detach(&self, key_event: KeyEvent) -> bool {
++        self.hosted_detach_enabled
++            && self.overlay.is_none()
++            && self.chat_widget.no_modal_or_popup_active()
++            && self.chat_widget.composer_is_empty()
++            && hosted_detach_shortcut_matches(key_event)
++    }
++
+     pub(super) fn refresh_status_line(&mut self) {
+         self.chat_widget.refresh_status_line();
+     }
+ }
+ 
++fn hosted_detach_shortcut_matches(key_event: KeyEvent) -> bool {
++    matches!(
++        key_event,
++        KeyEvent {
++            code: KeyCode::Left,
++            modifiers: KeyModifiers::NONE,
++            kind: KeyEventKind::Press | KeyEventKind::Repeat,
++            ..
++        }
++    )
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::super::test_support::make_test_app;
++    use super::*;
+ 
+     #[tokio::test]
+     async fn app_keymap_shortcuts_are_disabled_while_keymap_view_is_active() {
+@@ -280,4 +305,41 @@ mod tests {
+ 
+         assert!(!app.app_keymap_shortcuts_available());
+     }
++
++    #[test]
++    fn hosted_detach_shortcut_only_matches_plain_left_press_or_repeat() {
++        assert!(hosted_detach_shortcut_matches(KeyEvent::new(
++            KeyCode::Left,
++            KeyModifiers::NONE
++        )));
++        assert!(hosted_detach_shortcut_matches(KeyEvent {
++            code: KeyCode::Left,
++            modifiers: KeyModifiers::NONE,
++            kind: KeyEventKind::Repeat,
++            state: Default::default(),
++        }));
++        assert!(!hosted_detach_shortcut_matches(KeyEvent::new(
++            KeyCode::Left,
++            KeyModifiers::SHIFT
++        )));
++        assert!(!hosted_detach_shortcut_matches(KeyEvent::new(
++            KeyCode::Right,
++            KeyModifiers::NONE
++        )));
++    }
++
++    #[tokio::test]
++    async fn hosted_detach_requires_enabled_empty_composer_and_no_popup() {
++        let key = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
++        let mut app = make_test_app().await;
++
++        assert!(!app.should_host_detach(key));
++
++        app.hosted_detach_enabled = true;
++        assert!(app.should_host_detach(key));
++
++        app.chat_widget
++            .handle_key_event(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
++        assert!(!app.should_host_detach(key));
++    }
+ }
+diff --git a/codex-rs/tui/src/app/test_support.rs b/codex-rs/tui/src/app/test_support.rs
+index f34e22203f..f638c9aca1 100644
+--- a/codex-rs/tui/src/app/test_support.rs
++++ b/codex-rs/tui/src/app/test_support.rs
+@@ -48,6 +48,7 @@ pub(super) async fn make_test_app() -> App {
+         remote_app_server_auth_token: None,
+         pending_update_action: None,
+         pending_shutdown_exit_thread_id: None,
++        hosted_detach_enabled: false,
+         windows_sandbox: WindowsSandboxState::default(),
+         thread_event_channels: HashMap::new(),
+         thread_event_listener_tasks: HashMap::new(),
+diff --git a/codex-rs/tui/src/app/tests.rs b/codex-rs/tui/src/app/tests.rs
+index eacb6d5053..67f5895959 100644
+--- a/codex-rs/tui/src/app/tests.rs
++++ b/codex-rs/tui/src/app/tests.rs
+@@ -3890,6 +3890,7 @@ async fn make_test_app() -> App {
+         remote_app_server_auth_token: None,
+         pending_update_action: None,
+         pending_shutdown_exit_thread_id: None,
++        hosted_detach_enabled: false,
+         windows_sandbox: WindowsSandboxState::default(),
+         thread_event_channels: HashMap::new(),
+         thread_event_listener_tasks: HashMap::new(),
+@@ -3953,6 +3954,7 @@ async fn make_test_app_with_channels() -> (
+             remote_app_server_auth_token: None,
+             pending_update_action: None,
+             pending_shutdown_exit_thread_id: None,
++            hosted_detach_enabled: false,
+             windows_sandbox: WindowsSandboxState::default(),
+             thread_event_channels: HashMap::new(),
+             thread_event_listener_tasks: HashMap::new(),
+diff --git a/codex-rs/tui/src/app_event.rs b/codex-rs/tui/src/app_event.rs
+index 4ee405f495..3dd6180642 100644
+--- a/codex-rs/tui/src/app_event.rs
++++ b/codex-rs/tui/src/app_event.rs
+@@ -939,6 +939,8 @@ pub(crate) struct RealtimeWebrtcOffer {
+ pub(crate) enum ExitMode {
+     /// Shutdown core and exit after completion.
+     ShutdownFirst,
++    /// Exit the UI loop while leaving the active thread and host-owned app-server alive.
++    Detach,
+     /// Exit the UI loop immediately without waiting for shutdown.
+     ///
+     /// This skips `Op::Shutdown`, so any in-flight work may be dropped and
+diff --git a/codex-rs/tui/src/cli.rs b/codex-rs/tui/src/cli.rs
+index 3d47442c90..399ad63b15 100644
+--- a/codex-rs/tui/src/cli.rs
++++ b/codex-rs/tui/src/cli.rs
+@@ -33,6 +33,10 @@ pub struct Cli {
+     #[clap(skip)]
+     pub resume_include_non_interactive: bool,
+ 
++    /// Internal: enable host-owned detach behavior for embedded Agent View UIs.
++    #[clap(skip)]
++    pub hosted_detach_enabled: bool,
++
+     // Internal controls set by the top-level `codex fork` subcommand.
+     // These are not exposed as user flags on the base `codex` command.
+     #[clap(skip)]
+diff --git a/codex-rs/tui/src/hosted.rs b/codex-rs/tui/src/hosted.rs
+new file mode 100644
+index 0000000000..e5135b9ed4
+--- /dev/null
++++ b/codex-rs/tui/src/hosted.rs
+@@ -0,0 +1,54 @@
++use std::path::PathBuf;
++
++use clap::Parser;
++use codex_arg0::Arg0DispatchPaths;
++use codex_config::LoaderOverrides;
++
++use crate::Cli;
++use crate::ExitReason;
++use crate::run_main;
++
++#[derive(Debug, Clone)]
++pub struct HostedSessionConfig {
++    pub thread_id: String,
++    pub cwd: Option<PathBuf>,
++    pub remote_url: Option<String>,
++    pub remote_auth_token: Option<String>,
++    pub no_alt_screen: bool,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum HostedSessionExit {
++    Detached,
++    Quit,
++    Fatal(String),
++}
++
++pub async fn run_hosted_session_view(
++    config: HostedSessionConfig,
++    arg0_paths: Arg0DispatchPaths,
++    loader_overrides: LoaderOverrides,
++) -> std::io::Result<HostedSessionExit> {
++    let mut cli = Cli::try_parse_from(["codex-tui"]).map_err(std::io::Error::other)?;
++    cli.resume_session_id = Some(config.thread_id);
++    cli.resume_show_all = true;
++    cli.resume_include_non_interactive = true;
++    cli.hosted_detach_enabled = true;
++    cli.cwd = config.cwd;
++    cli.no_alt_screen = config.no_alt_screen;
++
++    let exit_info = run_main(
++        cli,
++        arg0_paths,
++        loader_overrides,
++        config.remote_url,
++        config.remote_auth_token,
++    )
++    .await?;
++
++    Ok(match exit_info.exit_reason {
++        ExitReason::Detached => HostedSessionExit::Detached,
++        ExitReason::UserRequested => HostedSessionExit::Quit,
++        ExitReason::Fatal(message) => HostedSessionExit::Fatal(message),
++    })
++}
+diff --git a/codex-rs/tui/src/lib.rs b/codex-rs/tui/src/lib.rs
+index 5622c59f65..aa01cbc0ba 100644
+--- a/codex-rs/tui/src/lib.rs
++++ b/codex-rs/tui/src/lib.rs
+@@ -17,6 +17,7 @@ use crate::session_resume::resolve_cwd_for_resume_or_fork;
+ use additional_dirs::add_dir_warning_message;
+ use app::App;
+ pub use app::AppExitInfo;
++use app::AppRunOptions;
+ pub use app::ExitReason;
+ use app_server_session::AppServerSession;
+ use codex_app_server_client::AppServerClient;
+@@ -127,6 +128,7 @@ mod frames;
+ mod get_git_diff;
+ mod goal_display;
+ mod history_cell;
++pub mod hosted;
+ mod ide_context;
+ pub(crate) mod insert_history;
+ pub use insert_history::insert_history_lines;
+@@ -1477,6 +1479,7 @@ async fn run_ratatui_app(
+         prompt,
+         shared,
+         no_alt_screen,
++        hosted_detach_enabled,
+         ..
+     } = cli;
+     let images = shared.into_inner().images;
+@@ -1527,6 +1530,9 @@ async fn run_ratatui_app(
+         remote_auth_token,
+         state_db,
+         environment_manager,
++        AppRunOptions {
++            hosted_detach_enabled,
++        },
+     )
+     .await;
+ 
+diff --git a/codex-rs/tui/src/main.rs b/codex-rs/tui/src/main.rs
+index 8b66e5368c..d0289ed71b 100644
+--- a/codex-rs/tui/src/main.rs
++++ b/codex-rs/tui/src/main.rs
+@@ -66,6 +66,7 @@ fn main() -> anyhow::Result<()> {
+                 eprintln!("ERROR: {message}");
+                 std::process::exit(1);
+             }
++            ExitReason::Detached => {}
+             ExitReason::UserRequested => {}
+         }
+ 

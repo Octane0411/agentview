@@ -394,18 +394,32 @@ Exit criteria:
 
 ### Phase 4: Hosted Codex Source Spike
 
+Status: in progress.
+
 Tasks:
 
-1. Create the Codex patch in `patches/codex` instead of carrying untracked
+1. [x] Create the Codex patch in `patches/codex` instead of carrying untracked
    submodule edits.
-2. Patch `codex-tui` to expose `run_hosted_session_view`.
-3. Build `agentview-codex-hosted` as a bridge crate.
+2. [x] Patch `codex-tui` to expose `run_hosted_session_view`.
+3. [x] Build `agentview-codex-hosted` as a bridge crate.
 4. If direct library hosting is blocked by terminal ownership or workspace
    dependency shape, build a temporary hosted helper binary from the same patch.
 5. Open an app-server-created thread by id.
 6. Render Codex native conversation UI.
 7. Capture Left Arrow as detach when safe.
 8. Return to AgentView list without interrupting the turn.
+
+Current checkpoint:
+
+- `patches/codex/0001-expose-hosted-session-view.patch` adds hosted detach
+  support to `codex-tui`.
+- `tools/check-codex-patches.sh` verifies that the patch applies cleanly to the
+  pinned Codex submodule.
+- `crates/agentview-codex-hosted` owns the AgentView-side hosted session
+  contract and temporary helper invocation shape.
+- Full `cargo test -p codex-tui hosted_detach --lib` still needs a successful
+  Codex dependency fetch; the first attempt was blocked in dependency download
+  by external network failures.
 
 Exit criteria:
 

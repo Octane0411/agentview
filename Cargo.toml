@@ -2,6 +2,7 @@
 members = [
   "crates/agentview-cli",
   "crates/agentview-codex-app-server",
+  "crates/agentview-codex-hosted",
   "crates/agentview-core",
   "crates/agentview-tui",
 ]
@@ -15,6 +16,7 @@ publish = false
 
 [workspace.dependencies]
 agentview-codex-app-server = { path = "crates/agentview-codex-app-server" }
+agentview-codex-hosted = { path = "crates/agentview-codex-hosted" }
 agentview-core = { path = "crates/agentview-core" }
 agentview-tui = { path = "crates/agentview-tui" }
 anyhow = "1.0"
