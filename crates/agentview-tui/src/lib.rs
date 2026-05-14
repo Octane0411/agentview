@@ -159,37 +159,36 @@ impl App {
                 vec![
                     ("Pinned".to_string(), pinned),
                     (
+                        "Ready for review".to_string(),
+                        rest.iter()
+                            .filter(|job| is_ready_for_review(job))
+                            .cloned()
+                            .collect(),
+                    ),
+                    (
                         "Needs input".to_string(),
                         rest.iter()
-                            .filter(|job| job.status == JobStatus::NeedsInput)
+                            .filter(|job| {
+                                !is_ready_for_review(job) && job.status == JobStatus::NeedsInput
+                            })
                             .cloned()
                             .collect(),
                     ),
                     (
                         "Working".to_string(),
                         rest.iter()
-                            .filter(|job| job.status == JobStatus::Working)
+                            .filter(|job| {
+                                !is_ready_for_review(job) && job.status == JobStatus::Working
+                            })
                             .cloned()
                             .collect(),
                     ),
                     (
                         "Completed".to_string(),
                         rest.iter()
-                            .filter(|job| job.status == JobStatus::Completed)
-                            .cloned()
-                            .collect(),
-                    ),
-                    (
-                        "Failed".to_string(),
-                        rest.iter()
-                            .filter(|job| job.status == JobStatus::Failed)
-                            .cloned()
-                            .collect(),
-                    ),
-                    (
-                        "Stopped".to_string(),
-                        rest.iter()
-                            .filter(|job| job.status == JobStatus::Stopped)
+                            .filter(|job| {
+                                !is_ready_for_review(job) && is_terminal_status(job.status)
+                            })
                             .cloned()
                             .collect(),
                     ),
@@ -627,9 +626,20 @@ fn count_jobs(jobs: &[Job]) -> Counts {
             .count(),
         completed: jobs
             .iter()
-            .filter(|job| job.status == JobStatus::Completed)
+            .filter(|job| !is_ready_for_review(job) && is_terminal_status(job.status))
             .count(),
     }
+}
+
+fn is_ready_for_review(job: &Job) -> bool {
+    job.status == JobStatus::Completed && !job.pr_refs.is_empty()
+}
+
+fn is_terminal_status(status: JobStatus) -> bool {
+    matches!(
+        status,
+        JobStatus::Completed | JobStatus::Failed | JobStatus::Stopped
+    )
 }
 
 fn short_cwd(cwd: &str) -> String {
@@ -639,4 +649,110 @@ fn short_cwd(cwd: &str) -> String {
     cwd.strip_prefix(&home)
         .map(|suffix| format!("~{suffix}"))
         .unwrap_or_else(|| cwd.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agentview_core::schema::{JobBackend, PrRef, ProcessState};
+
+    #[test]
+    fn state_grouping_matches_agent_view_order() {
+        let app = App {
+            jobs: vec![
+                job("pinned", JobStatus::Working, true, false),
+                job("ready", JobStatus::Completed, false, true),
+                job("needs", JobStatus::NeedsInput, false, false),
+                job("working", JobStatus::Working, false, false),
+                job("done", JobStatus::Completed, false, false),
+                job("failed", JobStatus::Failed, false, false),
+                job("stopped", JobStatus::Stopped, false, false),
+            ],
+            ..Default::default()
+        };
+
+        let groups = app.grouped_jobs();
+        let labels: Vec<_> = groups.iter().map(|(label, _)| label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Pinned",
+                "Ready for review",
+                "Needs input",
+                "Working",
+                "Completed"
+            ]
+        );
+
+        let completed = groups
+            .iter()
+            .find(|(label, _)| label == "Completed")
+            .map(|(_, jobs)| jobs)
+            .unwrap();
+        assert_eq!(
+            completed.iter().map(|job| job.status).collect::<Vec<_>>(),
+            vec![JobStatus::Completed, JobStatus::Failed, JobStatus::Stopped]
+        );
+    }
+
+    #[test]
+    fn header_completed_count_excludes_ready_for_review() {
+        let counts = count_jobs(&[
+            job("ready", JobStatus::Completed, false, true),
+            job("done", JobStatus::Completed, false, false),
+            job("failed", JobStatus::Failed, false, false),
+            job("stopped", JobStatus::Stopped, false, false),
+        ]);
+
+        assert_eq!(counts.completed, 3);
+    }
+
+    fn job(id: &str, status: JobStatus, pinned: bool, pr: bool) -> Job {
+        let now = now_iso();
+        Job {
+            id: id.to_string(),
+            provider: "codex".to_string(),
+            backend: JobBackend::AppServer,
+            codex_thread_id: Some(format!("thread-{id}")),
+            codex_turn_id: None,
+            title: id.to_string(),
+            initial_prompt: id.to_string(),
+            repo_root: "/repo".to_string(),
+            cwd: "/repo".to_string(),
+            dispatch_cwd: "/repo".to_string(),
+            worktree_path: None,
+            worktree_branch: None,
+            model: None,
+            profile: None,
+            approval_policy: "never".to_string(),
+            sandbox: "workspace-write".to_string(),
+            status,
+            process_state: ProcessState::Exited,
+            pid: None,
+            active_worker_pid: None,
+            pinned,
+            manual_order: None,
+            archived: false,
+            deleted: false,
+            last_summary: None,
+            last_output: None,
+            blocking_request: None,
+            pr_refs: if pr {
+                vec![PrRef {
+                    url: "https://github.com/acme/repo/pull/1".to_string(),
+                    owner: "acme".to_string(),
+                    repo: "repo".to_string(),
+                    number: 1,
+                    status: "unknown".to_string(),
+                }]
+            } else {
+                Vec::new()
+            },
+            created_at: now.clone(),
+            updated_at: now,
+            completed_at: None,
+            exit_code: None,
+            error: None,
+        }
+    }
 }

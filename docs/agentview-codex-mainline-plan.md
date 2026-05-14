@@ -231,6 +231,15 @@ Tasks:
 4. Stop/delete/respawn flows through supervisor and Codex app-server.
 5. PR status extraction once the session opens PRs.
 
+Current checkpoint:
+
+- State-grouped TUI rows now match the documented order:
+  `Pinned`, `Ready for review`, `Needs input`, `Working`, `Completed`.
+- The `Completed` group contains completed, failed, and stopped rows, with row
+  icons preserving the per-row outcome.
+- Header completed counts exclude rows already promoted to `Ready for review`,
+  matching the Claude Agent View example shape.
+
 Acceptance:
 
 - The product behavior matches the spec at the user-visible layer.
