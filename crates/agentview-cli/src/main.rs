@@ -2,7 +2,8 @@ use agentview_codex_app_server::{AppServerClient, ThreadStartOptions};
 use agentview_core::codex::{attach_codex, attach_hosted_codex};
 use agentview_core::jobs::{
     DispatchBackend, DispatchOptions, RemoveOptions, archive_job, dispatch_job, doctor, pin_job,
-    remove_job, rename_job, reply_to_job, respawn_job, stop_job,
+    refresh_pr_statuses, refresh_visible_pr_statuses, remove_job, rename_job, reply_to_job,
+    respawn_job, stop_job,
 };
 use agentview_core::schema::{Job, JobStatus};
 use agentview_core::store::{list_jobs, read_job_last, require_job, tail_job_events};
@@ -249,6 +250,9 @@ fn cmd_run(
 }
 
 fn cmd_list(all: bool) -> Result<()> {
+    if !all {
+        refresh_visible_pr_statuses()?;
+    }
     for job in list_jobs(all)? {
         println!("{}", format_job_line(&job));
     }
@@ -256,7 +260,7 @@ fn cmd_list(all: bool) -> Result<()> {
 }
 
 fn cmd_peek(job_id: &str) -> Result<()> {
-    let job = require_job(job_id)?;
+    let job = refresh_pr_statuses(job_id)?;
     let last = read_job_last(job_id)?;
     println!("{}  {}  {}", job.id, job.status, job.title);
     println!("cwd: {}", job.cwd);

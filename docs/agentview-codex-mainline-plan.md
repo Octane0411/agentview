@@ -263,6 +263,9 @@ Current checkpoint:
   rows show a compact PR status indicator, and peek output prints each PR with
   its currently known status. Unknown status is preserved as `unknown` until a
   resolver can prove checks/review/merge state.
+- CLI `agentview list` and `agentview peek` refresh PR status through
+  `gh pr view`, mapping GitHub state to the documented colors:
+  `green`, `yellow`, `purple`, and `grey`.
 
 Acceptance:
 
@@ -1104,5 +1107,5 @@ The next implementation work should follow this order:
      leaving patch changes applied in the submodule.
    - Document the tested Codex CLI/source version after every bump.
 3. Then fill the remaining parity gaps.
-   - External PR status resolution through GitHub or `gh`.
+   - TUI-side throttled PR status refresh.
    - Broader dirty-worktree removal coverage in real-Codex PTY E2E.

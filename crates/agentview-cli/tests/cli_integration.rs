@@ -129,7 +129,7 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
     });
     let list = env.agentview(&store, &codex).arg("list").output().unwrap();
     assert!(list.status.success());
-    assert!(String::from_utf8_lossy(&list.stdout).contains("pr:unknown"));
+    assert!(String::from_utf8_lossy(&list.stdout).contains("pr:green"));
 
     let peek = env
         .agentview(&store, &codex)
@@ -140,7 +140,7 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
     let peek_stdout = String::from_utf8_lossy(&peek.stdout);
     assert!(peek_stdout.contains(THREAD_ID));
     assert!(peek_stdout.contains("completed fake app-server"));
-    assert!(peek_stdout.contains("https://github.com/acme/app/pull/42 [unknown]"));
+    assert!(peek_stdout.contains("https://github.com/acme/app/pull/42 [green]"));
 
     let logs = env
         .agentview(&store, &codex)
@@ -189,10 +189,7 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
             .unwrap();
     assert_eq!(store_json["jobs"][&job_id]["backend"], "app_server");
     assert_eq!(store_json["jobs"][&job_id]["prRefs"][0]["number"], 42);
-    assert_eq!(
-        store_json["jobs"][&job_id]["prRefs"][0]["status"],
-        "unknown"
-    );
+    assert_eq!(store_json["jobs"][&job_id]["prRefs"][0]["status"], "green");
     let worktree_path = store_json["jobs"][&job_id]["worktreePath"]
         .as_str()
         .expect("worktree path");
@@ -927,7 +924,28 @@ exit 2
         let mut permissions = fs::metadata(&codex).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&codex, permissions).unwrap();
+        self.write_fake_gh(&bin);
         codex
+    }
+
+    fn write_fake_gh(&self, bin: &Path) {
+        let gh = bin.join("gh");
+        fs::write(
+            &gh,
+            r#"#!/bin/sh
+set -eu
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  printf '%s\n' '{"state":"OPEN","isDraft":false,"closed":false,"mergedAt":null,"mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","statusCheckRollup":[{"state":"SUCCESS"}],"url":"https://github.com/acme/app/pull/42"}'
+  exit 0
+fi
+printf '%s\n' "unknown fake gh command: $*" >&2
+exit 2
+"#,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&gh).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&gh, permissions).unwrap();
     }
 
     fn fake_slow_app_server_codex(&self) -> PathBuf {

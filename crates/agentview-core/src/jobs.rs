@@ -1,12 +1,15 @@
 use crate::schema::{Job, JobBackend, JobStatus, ProcessState};
 use crate::store::{
-    append_job_event, put_job, remove_job_files, require_job, update_job, with_store,
+    append_job_event, list_jobs, put_job, remove_job_files, require_job, update_job, with_store,
 };
 use crate::supervisor::{
     supervisor_resolve_server_request, supervisor_start_app_server_turn,
     supervisor_stop_app_server_turn,
 };
-use crate::util::{command_exists, extract_pr_refs, make_job_id, now_iso, title_from_prompt};
+use crate::util::{
+    command_exists, extract_pr_refs, make_job_id, now_iso, resolve_pr_ref_statuses,
+    title_from_prompt,
+};
 use crate::worktree::{create_worktree, remove_worktree, worktree_has_changes};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -444,6 +447,38 @@ pub fn pin_job(job_id: &str, pinned: Option<bool>) -> Result<()> {
         job.pinned = pinned.unwrap_or(!current.pinned);
         Ok(())
     })?;
+    Ok(())
+}
+
+pub fn refresh_pr_statuses(job_id: &str) -> Result<Job> {
+    let job = require_job(job_id)?;
+    if job.pr_refs.is_empty() {
+        return Ok(job);
+    }
+    let resolved = resolve_pr_ref_statuses(&job.pr_refs);
+    if resolved == job.pr_refs {
+        return Ok(job);
+    }
+    append_job_event(
+        job_id,
+        &json!({
+            "type": "agentview_pr_statuses_refreshed",
+            "prs": resolved,
+            "timestamp": now_iso()
+        }),
+    )?;
+    update_job(job_id, |job| {
+        job.pr_refs = resolved;
+        Ok(())
+    })
+}
+
+pub fn refresh_visible_pr_statuses() -> Result<()> {
+    for job in list_jobs(false)? {
+        if !job.pr_refs.is_empty() {
+            refresh_pr_statuses(&job.id)?;
+        }
+    }
     Ok(())
 }
 

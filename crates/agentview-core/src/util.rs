@@ -233,6 +233,164 @@ pub fn pr_status_indicator(refs: &[PrRef]) -> Option<String> {
     Some(format!("{prefix}:{status}"))
 }
 
+pub fn resolve_pr_ref_statuses(refs: &[PrRef]) -> Vec<PrRef> {
+    refs.iter()
+        .map(|pr| {
+            let mut resolved = pr.clone();
+            if let Some(status) = resolve_pr_ref_status(pr) {
+                resolved.status = status.to_string();
+            }
+            resolved
+        })
+        .collect()
+}
+
+fn resolve_pr_ref_status(pr: &PrRef) -> Option<&'static str> {
+    let output = run_command(
+        "gh",
+        &[
+            "pr",
+            "view",
+            &pr.url,
+            "--json",
+            "state,isDraft,closed,mergedAt,mergeStateStatus,reviewDecision,statusCheckRollup,url",
+        ],
+        None,
+    )
+    .ok()?;
+    if output.code != 0 {
+        return None;
+    }
+    let value: Value = serde_json::from_str(&output.stdout).ok()?;
+    pr_status_from_gh_json(&value)
+}
+
+fn pr_status_from_gh_json(value: &Value) -> Option<&'static str> {
+    let state = field_upper(value, "state");
+    if non_empty_string(value, "mergedAt") || state.as_deref() == Some("MERGED") {
+        return Some("purple");
+    }
+    if value
+        .get("isDraft")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || value
+            .get("closed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || state.as_deref() == Some("CLOSED")
+    {
+        return Some("grey");
+    }
+
+    let review_decision = field_upper(value, "reviewDecision");
+    if matches!(
+        review_decision.as_deref(),
+        Some("CHANGES_REQUESTED" | "REVIEW_REQUIRED")
+    ) {
+        return Some("yellow");
+    }
+
+    let merge_state = field_upper(value, "mergeStateStatus");
+    if matches!(
+        merge_state.as_deref(),
+        Some("DIRTY" | "BLOCKED" | "BEHIND" | "UNSTABLE")
+    ) || check_rollup_is_yellow(value.get("statusCheckRollup"))
+    {
+        return Some("yellow");
+    }
+
+    if check_rollup_is_green(value.get("statusCheckRollup"))
+        || merge_state.as_deref() == Some("CLEAN")
+        || review_decision.as_deref() == Some("APPROVED")
+    {
+        return Some("green");
+    }
+
+    None
+}
+
+fn field_upper(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| text.trim().to_ascii_uppercase())
+}
+
+fn non_empty_string(value: &Value, key: &str) -> bool {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty())
+}
+
+fn check_rollup_is_yellow(value: Option<&Value>) -> bool {
+    let words = check_rollup_words(value);
+    words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "ACTION_REQUIRED"
+                | "CANCELLED"
+                | "CANCELED"
+                | "ERROR"
+                | "EXPECTED"
+                | "FAILURE"
+                | "FAILED"
+                | "IN_PROGRESS"
+                | "PENDING"
+                | "QUEUED"
+                | "REQUESTED"
+                | "STARTUP_FAILURE"
+                | "STALE"
+                | "TIMED_OUT"
+                | "WAITING"
+        )
+    })
+}
+
+fn check_rollup_is_green(value: Option<&Value>) -> bool {
+    let words = check_rollup_words(value);
+    !words.is_empty()
+        && words.iter().all(|word| {
+            matches!(
+                word.as_str(),
+                "COMPLETED" | "NEUTRAL" | "PASSED" | "PASSING" | "SKIPPED" | "SUCCESS"
+            )
+        })
+}
+
+fn check_rollup_words(value: Option<&Value>) -> Vec<String> {
+    let mut words = Vec::new();
+    if let Some(value) = value {
+        collect_status_words(value, &mut words);
+    }
+    words
+}
+
+fn collect_status_words(value: &Value, words: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                if matches!(key.as_str(), "conclusion" | "state" | "status") {
+                    if let Some(text) = child.as_str() {
+                        if !text.trim().is_empty() {
+                            words.push(text.trim().to_ascii_uppercase());
+                        }
+                    }
+                }
+                collect_status_words(child, words);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                collect_status_words(child, words);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn extract_thread_id(event: &Value) -> Option<String> {
     for key in [
         "threadId",
@@ -396,6 +554,51 @@ mod tests {
             "https://github.com/acme/app/pull/42 [green]"
         );
         assert_eq!(pr_status_indicator(&merged).as_deref(), Some("pr:green"));
+    }
+
+    #[test]
+    fn pr_status_maps_gh_states_to_documented_colors() {
+        assert_eq!(
+            pr_status_from_gh_json(&json!({ "mergedAt": "2026-05-14T00:00:00Z" })),
+            Some("purple")
+        );
+        assert_eq!(
+            pr_status_from_gh_json(&json!({ "state": "CLOSED" })),
+            Some("grey")
+        );
+        assert_eq!(
+            pr_status_from_gh_json(&json!({
+                "state": "OPEN",
+                "isDraft": false,
+                "closed": false,
+                "reviewDecision": "CHANGES_REQUESTED",
+                "mergeStateStatus": "CLEAN",
+            })),
+            Some("yellow")
+        );
+        assert_eq!(
+            pr_status_from_gh_json(&json!({
+                "state": "OPEN",
+                "isDraft": false,
+                "closed": false,
+                "reviewDecision": "APPROVED",
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [
+                    { "state": "SUCCESS" },
+                    { "conclusion": "SKIPPED" }
+                ],
+            })),
+            Some("green")
+        );
+        assert_eq!(
+            pr_status_from_gh_json(&json!({
+                "state": "OPEN",
+                "isDraft": false,
+                "closed": false,
+                "statusCheckRollup": [{ "state": "PENDING" }],
+            })),
+            Some("yellow")
+        );
     }
 
     #[test]
