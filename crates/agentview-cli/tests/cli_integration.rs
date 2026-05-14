@@ -148,6 +148,11 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
     assert!(logs_stdout.contains("app_server_thread_started"));
     assert!(logs_stdout.contains("app_server_turn_started"));
     assert!(!logs_stdout.contains("started fake codex"));
+
+    let store_json: Value =
+        serde_json::from_str(&fs::read_to_string(store.path().join("agentview.json")).unwrap())
+            .unwrap();
+    assert_eq!(store_json["jobs"][&job_id]["backend"], "app_server");
 }
 
 struct TestEnv {

@@ -1,4 +1,4 @@
-use crate::schema::{BlockingRequest, Job, JobStatus, ProcessState};
+use crate::schema::{BlockingRequest, Job, JobBackend, JobStatus, ProcessState};
 use crate::store::{
     append_job_event, get_job, read_job_events, require_job, update_job, write_job_last,
 };
@@ -543,6 +543,12 @@ pub fn find_recent_codex_session_id(job: &Job) -> Result<Option<String>> {
 
 pub fn attach_codex(job: &Job) -> Result<i32> {
     assert_codex_available()?;
+    if job.backend == JobBackend::AppServer {
+        bail!(
+            "Hosted attach for app-server-backed Codex jobs is not wired yet. Use `agentview peek {}` for now.",
+            job.id
+        );
+    }
     if job.process_state == ProcessState::Alive
         || matches!(job.status, JobStatus::Working | JobStatus::NeedsInput)
     {

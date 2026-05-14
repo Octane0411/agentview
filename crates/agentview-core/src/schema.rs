@@ -52,6 +52,14 @@ impl ProcessState {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobBackend {
+    #[default]
+    FallbackExec,
+    AppServer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrRef {
     pub url: String,
@@ -76,6 +84,8 @@ pub struct BlockingRequest {
 pub struct Job {
     pub id: String,
     pub provider: String,
+    #[serde(default)]
+    pub backend: JobBackend,
     #[serde(rename = "codexThreadId")]
     pub codex_thread_id: Option<String>,
     pub title: String,

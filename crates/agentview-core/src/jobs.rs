@@ -1,4 +1,4 @@
-use crate::schema::{Job, JobStatus, ProcessState};
+use crate::schema::{Job, JobBackend, JobStatus, ProcessState};
 use crate::store::{append_job_event, put_job, remove_job_files, require_job, update_job};
 use crate::util::{command_exists, extract_pr_refs, make_job_id, now_iso, title_from_prompt};
 use crate::worktree::{create_worktree, remove_worktree, worktree_has_changes};
@@ -59,9 +59,14 @@ pub fn dispatch_job(prompt: &str, options: DispatchOptions) -> Result<Job> {
     let job_id = make_job_id();
     let worktree = create_worktree(&parsed.cwd, &job_id, &title)?;
     let now = now_iso();
+    let backend = match options.backend {
+        DispatchBackend::FallbackExec => JobBackend::FallbackExec,
+        DispatchBackend::AppServer => JobBackend::AppServer,
+    };
     let job = Job {
         id: job_id.clone(),
         provider: "codex".to_string(),
+        backend,
         codex_thread_id: None,
         title,
         initial_prompt: parsed.prompt.clone(),
@@ -117,9 +122,9 @@ pub fn dispatch_job(prompt: &str, options: DispatchOptions) -> Result<Job> {
         }),
     )?;
 
-    let worker_mode = match options.backend {
-        DispatchBackend::FallbackExec => "run",
-        DispatchBackend::AppServer => "app-server-run",
+    let worker_mode = match backend {
+        JobBackend::FallbackExec => "run",
+        JobBackend::AppServer => "app-server-run",
     };
     let child = spawn_worker(&job_id, worker_mode, None, &job.cwd)?;
     let pid = child.id();
