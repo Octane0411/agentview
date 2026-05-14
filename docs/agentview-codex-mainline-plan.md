@@ -1088,6 +1088,22 @@ enter/detach/re-enter path through a PTY. The script sets
 `AGENTVIEW_TUI_EXIT_AFTER_ATTACH=1`, a test hook that exits only after the
 outer list has returned from attach and refreshed.
 
+The script also asks the real Codex turn to create a marker file in the
+session worktree, verifies that plain `agentview rm <id>` refuses the dirty
+worktree, then verifies `agentview rm --force --purge <id>` removes the
+worktree.
+
+Latest verified run:
+
+```text
+date: 2026-05-14
+job: av_mp5d3xyo_1r5h
+thread: 019e2617-4090-7713-a6f3-977fc7edcd65
+turn: 019e2617-40d3-70f3-9427-394bba9138b7
+marker: AGENTVIEW_HOSTED_DETACH_E2E_1778755518_OK
+coverage: hosted detach/re-enter, same-turn continuity, dirty worktree rm refusal, force purge cleanup
+```
+
 Regression tests:
 
 - `Enter` on normal app-server job does not execute `codex resume`.
@@ -1109,4 +1125,5 @@ The next implementation work should follow this order:
      leaving patch changes applied in the submodule.
    - Document the tested Codex CLI/source version after every bump.
 3. Then fill the remaining parity gaps.
-   - Broader dirty-worktree removal coverage in real-Codex PTY E2E.
+   - Keep running and recording the real-Codex PTY E2E after hosted-session
+     changes.

@@ -83,7 +83,7 @@ dispatch_job() {
   local marker="$1"
   local output
   local prompt
-  prompt="Use the shell tool to run exactly: sleep 60; echo $marker. Do not edit files. After the command finishes, reply exactly $marker."
+  prompt="Use the shell tool to run exactly: printf '%s\n' $marker > agentview-e2e-marker.txt; sleep 60; echo $marker. Do not use apply_patch. After the command finishes, reply exactly $marker."
   output="$(run_agentview run --cwd "$REPO" --sandbox workspace-write "$prompt" 2>&1)"
   printf '%s\n' "$output"
   JOB_ID="$(
@@ -98,6 +98,7 @@ dispatch_job() {
 PEEK_OUTPUT=""
 THREAD_ID=""
 TURN_ID=""
+WORKTREE_PATH=""
 
 job_has_active_turn() {
   PEEK_OUTPUT="$(run_agentview peek "$JOB_ID" 2>&1)" || return 1
@@ -109,6 +110,15 @@ remember_active_ids() {
   TURN_ID="$(awk '/^turn:/ { print $2; exit }' <<<"$PEEK_OUTPUT")"
   if [[ -z "$THREAD_ID" || -z "$TURN_ID" ]]; then
     echo "error: missing thread or turn id in peek output" >&2
+    printf '%s\n' "$PEEK_OUTPUT" >&2
+    exit 1
+  fi
+}
+
+remember_worktree_path() {
+  WORKTREE_PATH="$(awk '/^worktree:/ { print $2; exit }' <<<"$PEEK_OUTPUT")"
+  if [[ -z "$WORKTREE_PATH" ]]; then
+    echo "error: missing worktree path in peek output" >&2
     printf '%s\n' "$PEEK_OUTPUT" >&2
     exit 1
   fi
@@ -186,6 +196,40 @@ assert_detach_logs() {
   fi
 }
 
+assert_worktree_dirty_protection() {
+  local marker="$1"
+  local marker_file="$WORKTREE_PATH/agentview-e2e-marker.txt"
+
+  if [[ ! -f "$marker_file" ]]; then
+    echo "error: expected marker file in worktree: $marker_file" >&2
+    ls -la "$WORKTREE_PATH" >&2 || true
+    exit 1
+  fi
+  if [[ "$(cat "$marker_file")" != "$marker" ]]; then
+    echo "error: marker file content mismatch" >&2
+    cat "$marker_file" >&2 || true
+    exit 1
+  fi
+
+  local remove_output
+  if remove_output="$(run_agentview rm "$JOB_ID" 2>&1)"; then
+    echo "error: rm unexpectedly succeeded on dirty worktree" >&2
+    printf '%s\n' "$remove_output" >&2
+    exit 1
+  fi
+  if [[ "$remove_output" != *"uncommitted changes"* ]]; then
+    echo "error: rm failure did not mention uncommitted changes" >&2
+    printf '%s\n' "$remove_output" >&2
+    exit 1
+  fi
+
+  run_agentview rm --force --purge "$JOB_ID" >/dev/null
+  if [[ -e "$WORKTREE_PATH" ]]; then
+    echo "error: force purge did not remove worktree: $WORKTREE_PATH" >&2
+    exit 1
+  fi
+}
+
 main() {
   local marker
   marker="AGENTVIEW_HOSTED_DETACH_E2E_$(date +%s)_OK"
@@ -203,6 +247,8 @@ main() {
 
   assert_detach_logs
   wait_until "completed Codex turn with marker" "$TIMEOUT_SECONDS" job_completed_with_marker "$marker"
+  remember_worktree_path
+  assert_worktree_dirty_protection "$marker"
 
   printf 'ok: hosted detach E2E passed for %s\n' "$JOB_ID"
   printf 'thread: %s\nturn: %s\nmarker: %s\n' "$THREAD_ID" "$TURN_ID" "$marker"

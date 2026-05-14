@@ -165,4 +165,6 @@ tools/e2e-hosted-detach.sh
 
 The integration tests use fake `codex` executables to verify dispatch, list,
 peek, attach, needs-input reply/approval, stop, and conservative worktree
-deletion. Run real-Codex E2E before relying on a release build.
+deletion. The real-Codex PTY script also verifies hosted detach/re-enter and
+dirty-worktree remove protection. Run real-Codex E2E before relying on a
+release build.
