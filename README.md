@@ -55,7 +55,8 @@ agentview doctor
 ## TUI Shortcuts
 
 - `Up` / `Down`: select a session
-- `Enter`: attach selected session, or dispatch/send typed input
+- `Enter`: attach selected session, collapse/expand a group header, or
+  dispatch/send typed input
 - `Space`: peek selected session; when peek is open, typed input replies to that session
 - `Ctrl+X`: stop selected session; press again within two seconds to delete
 - `Ctrl+T`: pin/unpin

@@ -21,7 +21,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{self, IsTerminal, Stdout};
 use std::time::{Duration, Instant};
 
@@ -30,8 +30,22 @@ const GROUP_BY_PREFERENCE: &str = "tui.groupBy";
 
 #[derive(Debug, Clone)]
 enum Row {
-    Header(String),
+    Header {
+        key: String,
+        label: String,
+        count: usize,
+        collapsed: bool,
+        dispatch_cwd: Option<std::path::PathBuf>,
+    },
     Job(Job),
+}
+
+#[derive(Debug, Clone)]
+struct Group {
+    key: String,
+    label: String,
+    dispatch_cwd: Option<std::path::PathBuf>,
+    jobs: Vec<Job>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +94,7 @@ struct App {
     peek: bool,
     help: bool,
     group_by: GroupBy,
+    collapsed_groups: HashSet<String>,
     last_delete: Option<LastDelete>,
     last_refresh: Instant,
 }
@@ -95,6 +110,7 @@ impl Default for App {
             peek: false,
             help: false,
             group_by: GroupBy::State,
+            collapsed_groups: HashSet::new(),
             last_delete: None,
             last_refresh: Instant::now(),
         }
@@ -142,12 +158,13 @@ impl App {
     }
 
     fn refresh(&mut self) -> Result<()> {
+        let initial_refresh = self.rows.is_empty();
         self.jobs = list_jobs(false)?;
         self.build_rows();
         if self.selected >= self.rows.len() {
             self.selected = self.rows.len().saturating_sub(1);
         }
-        if matches!(self.rows.get(self.selected), Some(Row::Header(_))) {
+        if initial_refresh && matches!(self.rows.get(self.selected), Some(Row::Header { .. })) {
             if let Some(index) = self.rows.iter().position(|row| matches!(row, Row::Job(_))) {
                 self.selected = index;
             }
@@ -169,17 +186,26 @@ impl App {
 
     fn build_rows(&mut self) {
         let mut rows = Vec::new();
-        for (label, jobs) in self.grouped_jobs() {
-            if jobs.is_empty() {
+        for group in self.grouped_jobs() {
+            if group.jobs.is_empty() {
                 continue;
             }
-            rows.push(Row::Header(label));
-            rows.extend(jobs.into_iter().map(Row::Job));
+            let collapsed = self.collapsed_groups.contains(&group.key);
+            rows.push(Row::Header {
+                key: group.key,
+                label: group.label,
+                count: group.jobs.len(),
+                collapsed,
+                dispatch_cwd: group.dispatch_cwd,
+            });
+            if !collapsed {
+                rows.extend(group.jobs.into_iter().map(Row::Job));
+            }
         }
         self.rows = rows;
     }
 
-    fn grouped_jobs(&self) -> Vec<(String, Vec<Job>)> {
+    fn grouped_jobs(&self) -> Vec<Group> {
         match self.group_by {
             GroupBy::State => {
                 let pinned: Vec<_> = self.jobs.iter().filter(|job| job.pinned).cloned().collect();
@@ -190,16 +216,16 @@ impl App {
                     .cloned()
                     .collect();
                 vec![
-                    ("Pinned".to_string(), pinned),
-                    (
-                        "Ready for review".to_string(),
+                    state_group("Pinned", pinned),
+                    state_group(
+                        "Ready for review",
                         rest.iter()
                             .filter(|job| is_ready_for_review(job))
                             .cloned()
                             .collect(),
                     ),
-                    (
-                        "Needs input".to_string(),
+                    state_group(
+                        "Needs input",
                         rest.iter()
                             .filter(|job| {
                                 !is_ready_for_review(job) && job.status == JobStatus::NeedsInput
@@ -207,8 +233,8 @@ impl App {
                             .cloned()
                             .collect(),
                     ),
-                    (
-                        "Working".to_string(),
+                    state_group(
+                        "Working",
                         rest.iter()
                             .filter(|job| {
                                 !is_ready_for_review(job) && job.status == JobStatus::Working
@@ -216,8 +242,8 @@ impl App {
                             .cloned()
                             .collect(),
                     ),
-                    (
-                        "Completed".to_string(),
+                    state_group(
+                        "Completed",
                         rest.iter()
                             .filter(|job| {
                                 !is_ready_for_review(job) && is_terminal_status(job.status)
@@ -230,16 +256,22 @@ impl App {
             GroupBy::Cwd => {
                 let mut grouped: BTreeMap<String, Vec<Job>> = BTreeMap::new();
                 for job in &self.jobs {
-                    grouped
-                        .entry(short_cwd(if job.dispatch_cwd.is_empty() {
-                            &job.cwd
-                        } else {
-                            &job.dispatch_cwd
-                        }))
-                        .or_default()
-                        .push(job.clone());
+                    let cwd = if job.dispatch_cwd.is_empty() {
+                        &job.cwd
+                    } else {
+                        &job.dispatch_cwd
+                    };
+                    grouped.entry(cwd.clone()).or_default().push(job.clone());
                 }
-                grouped.into_iter().collect()
+                grouped
+                    .into_iter()
+                    .map(|(cwd, jobs)| Group {
+                        key: format!("cwd:{cwd}"),
+                        dispatch_cwd: Some(std::path::PathBuf::from(&cwd)),
+                        label: short_cwd(&cwd),
+                        jobs,
+                    })
+                    .collect()
             }
         }
     }
@@ -247,6 +279,13 @@ impl App {
     fn selected_job(&self) -> Option<Job> {
         match self.rows.get(self.selected) {
             Some(Row::Job(job)) => Some(job.clone()),
+            _ => None,
+        }
+    }
+
+    fn selected_header_dispatch_cwd(&self) -> Option<std::path::PathBuf> {
+        match self.rows.get(self.selected) {
+            Some(Row::Header { dispatch_cwd, .. }) => dispatch_cwd.clone(),
             _ => None,
         }
     }
@@ -351,17 +390,8 @@ impl App {
         if self.rows.is_empty() {
             return;
         }
-        let mut next = self.selected as isize;
-        loop {
-            next = (next + delta).clamp(0, self.rows.len().saturating_sub(1) as isize);
-            if matches!(self.rows.get(next as usize), Some(Row::Job(_)))
-                || next == 0
-                || next == self.rows.len() as isize - 1
-            {
-                self.selected = next as usize;
-                break;
-            }
-        }
+        self.selected = (self.selected as isize + delta)
+            .clamp(0, self.rows.len().saturating_sub(1) as isize) as usize;
     }
 
     fn submit(&mut self, terminal: &mut Term) -> Result<bool> {
@@ -397,6 +427,10 @@ impl App {
             return Ok(false);
         }
 
+        if self.toggle_selected_group() {
+            return Ok(false);
+        }
+
         self.attach_selected(terminal)
     }
 
@@ -411,13 +445,24 @@ impl App {
         if self.group_by != GroupBy::Cwd {
             return None;
         }
-        self.selected_job().map(|job| {
-            std::path::PathBuf::from(if job.dispatch_cwd.is_empty() {
-                job.cwd
-            } else {
-                job.dispatch_cwd
-            })
-        })
+        self.selected_job()
+            .map(|job| job_dispatch_cwd(&job))
+            .or_else(|| self.selected_header_dispatch_cwd())
+    }
+
+    fn toggle_selected_group(&mut self) -> bool {
+        let Some(Row::Header { key, .. }) = self.rows.get(self.selected) else {
+            return false;
+        };
+        let key = key.clone();
+        if !self.collapsed_groups.insert(key.clone()) {
+            self.collapsed_groups.remove(&key);
+        }
+        self.build_rows();
+        if self.selected >= self.rows.len() {
+            self.selected = self.rows.len().saturating_sub(1);
+        }
+        true
     }
 
     fn attach_selected(&mut self, terminal: &mut Term) -> Result<bool> {
@@ -538,8 +583,17 @@ impl App {
             let items: Vec<_> = rows
                 .iter()
                 .map(|row| match row {
-                    Row::Header(label) => ListItem::new(Line::from(Span::styled(
-                        label.clone(),
+                    Row::Header {
+                        label,
+                        count,
+                        collapsed,
+                        ..
+                    } => ListItem::new(Line::from(Span::styled(
+                        format!(
+                            "{} {} ({count})",
+                            if *collapsed { "+" } else { "-" },
+                            label
+                        ),
                         Style::default().add_modifier(Modifier::BOLD),
                     ))),
                     Row::Job(job) => ListItem::new(Line::from(render_job_spans(job))),
@@ -685,6 +739,23 @@ fn count_jobs(jobs: &[Job]) -> Counts {
     }
 }
 
+fn state_group(label: &str, jobs: Vec<Job>) -> Group {
+    Group {
+        key: format!("state:{label}"),
+        label: label.to_string(),
+        dispatch_cwd: None,
+        jobs,
+    }
+}
+
+fn job_dispatch_cwd(job: &Job) -> std::path::PathBuf {
+    std::path::PathBuf::from(if job.dispatch_cwd.is_empty() {
+        job.cwd.clone()
+    } else {
+        job.dispatch_cwd.clone()
+    })
+}
+
 fn is_ready_for_review(job: &Job) -> bool {
     job.status == JobStatus::Completed && !job.pr_refs.is_empty()
 }
@@ -727,7 +798,7 @@ mod tests {
         };
 
         let groups = app.grouped_jobs();
-        let labels: Vec<_> = groups.iter().map(|(label, _)| label.as_str()).collect();
+        let labels: Vec<_> = groups.iter().map(|group| group.label.as_str()).collect();
         assert_eq!(
             labels,
             vec![
@@ -741,8 +812,8 @@ mod tests {
 
         let completed = groups
             .iter()
-            .find(|(label, _)| label == "Completed")
-            .map(|(_, jobs)| jobs)
+            .find(|group| group.label == "Completed")
+            .map(|group| &group.jobs)
             .unwrap();
         assert_eq!(
             completed.iter().map(|job| job.status).collect::<Vec<_>>(),
@@ -791,6 +862,53 @@ mod tests {
         app.selected = 1;
 
         assert_eq!(app.dispatch_options().cwd, None);
+    }
+
+    #[test]
+    fn enter_on_group_header_collapses_and_expands_group() {
+        let mut app = App {
+            jobs: vec![job("working", JobStatus::Working, false, false)],
+            ..Default::default()
+        };
+        app.build_rows();
+        app.selected = 0;
+
+        assert_eq!(app.rows.len(), 2);
+        assert!(app.toggle_selected_group());
+        assert_eq!(app.rows.len(), 1);
+        assert!(matches!(
+            app.rows.first(),
+            Some(Row::Header {
+                collapsed: true,
+                ..
+            })
+        ));
+
+        assert!(app.toggle_selected_group());
+        assert_eq!(app.rows.len(), 2);
+        assert!(matches!(
+            app.rows.first(),
+            Some(Row::Header {
+                collapsed: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn collapsed_directory_header_can_be_dispatch_target() {
+        let mut selected = job("selected", JobStatus::Working, false, false);
+        selected.dispatch_cwd = "/repo".to_string();
+        let mut app = App {
+            jobs: vec![selected],
+            group_by: GroupBy::Cwd,
+            ..Default::default()
+        };
+        app.build_rows();
+        app.selected = 0;
+        assert!(app.toggle_selected_group());
+
+        assert_eq!(app.dispatch_options().cwd, Some(PathBuf::from("/repo")));
     }
 
     fn job(id: &str, status: JobStatus, pinned: bool, pr: bool) -> Job {

@@ -243,6 +243,10 @@ Current checkpoint:
   `tui.groupBy`.
 - When grouped by directory, dispatch from the input uses the highlighted row's
   original dispatch directory as `DispatchOptions.cwd`.
+- Group headers are selectable, and pressing `Enter` on a group header
+  collapses or expands that group.
+- A collapsed directory group header can still act as the dispatch target for a
+  new task.
 
 Acceptance:
 
