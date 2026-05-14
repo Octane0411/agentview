@@ -114,14 +114,6 @@ pub enum AppServerEvent {
     ServerRequest(ServerRequest),
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct RpcError {
-    pub code: i64,
-    pub message: String,
-    #[serde(default)]
-    pub data: Option<Value>,
-}
-
 #[derive(Debug)]
 pub struct AppServerClient {
     child: Option<Child>,
@@ -579,7 +571,7 @@ enum WireMessage {
 struct ResponseMessage {
     id: Value,
     result: Option<Value>,
-    error: Option<RpcError>,
+    error: Option<JSONRPCError>,
 }
 
 #[derive(Debug)]
@@ -592,6 +584,7 @@ enum ReaderEvent {
 
 fn response_result(response: ResponseMessage) -> Result<Value> {
     if let Some(error) = response.error {
+        let error = error.error;
         if let Some(data) = error.data {
             bail!(
                 "app-server error {}: {}\ndata: {}",
@@ -711,7 +704,7 @@ fn wire_message_from_value(value: Value) -> Result<WireMessage> {
         JSONRPCMessage::Error(error) => Ok(WireMessage::Response(ResponseMessage {
             id: request_id_to_value(error.id.clone()),
             result: None,
-            error: Some(rpc_error_from_protocol(error)),
+            error: Some(error),
         })),
     }
 }
@@ -734,14 +727,6 @@ fn request_id_to_value(id: RequestId) -> Value {
     match id {
         RequestId::String(value) => Value::String(value),
         RequestId::Integer(value) => Value::from(value),
-    }
-}
-
-fn rpc_error_from_protocol(error: JSONRPCError) -> RpcError {
-    RpcError {
-        code: error.error.code,
-        message: error.error.message,
-        data: error.error.data,
     }
 }
 

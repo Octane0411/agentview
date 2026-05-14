@@ -234,6 +234,8 @@ Current checkpoint:
 - `agentview-codex-app-server` uses Codex's `InitializeResponse` type directly
   and converts only at the runtime boundary where AgentView wants a plain
   `PathBuf`.
+- `agentview-codex-app-server` uses Codex's `JSONRPCError` internally instead
+  of maintaining a duplicate JSON-RPC error struct.
 - `agentview-core` delegates pending Codex server-request response construction
   to `agentview-codex-runtime` instead of hand-assembling those protocol
   payloads directly.
