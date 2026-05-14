@@ -1,5 +1,6 @@
 use crate::schema::{Job, JobBackend, JobStatus, ProcessState};
 use crate::store::{append_job_event, put_job, remove_job_files, require_job, update_job};
+use crate::supervisor::supervisor_start_app_server_turn;
 use crate::util::{command_exists, extract_pr_refs, make_job_id, now_iso, title_from_prompt};
 use crate::worktree::{create_worktree, remove_worktree, worktree_has_changes};
 use anyhow::{Context, Result, bail};
@@ -123,36 +124,32 @@ pub fn dispatch_job(prompt: &str, options: DispatchOptions) -> Result<Job> {
         }),
     )?;
 
-    let worker_mode = match backend {
-        JobBackend::FallbackExec => "run",
-        JobBackend::AppServer => "app-server-run",
+    let pid = match backend {
+        JobBackend::FallbackExec => spawn_worker(&job_id, "run", None, &job.cwd)?.id(),
+        JobBackend::AppServer => supervisor_start_app_server_turn(&job_id, &parsed.prompt, false)?,
     };
-    let child = spawn_worker(&job_id, worker_mode, None, &job.cwd)?;
-    let pid = child.id();
-    update_job(&job_id, |job| {
-        job.pid = Some(pid);
-        job.process_state = ProcessState::Alive;
-        job.last_summary = Some(
-            worktree
-                .warning
-                .clone()
-                .unwrap_or_else(|| "starting Codex".to_string()),
-        );
-        Ok(())
-    })?;
 
-    let mut next = job;
-    next.pid = Some(pid);
-    next.process_state = ProcessState::Alive;
-    Ok(next)
+    update_job(&job_id, |job| {
+        if job.process_state == ProcessState::Alive {
+            job.pid = Some(pid);
+            job.active_worker_pid = Some(pid);
+            job.last_summary = Some(
+                worktree
+                    .warning
+                    .clone()
+                    .unwrap_or_else(|| "starting Codex".to_string()),
+            );
+        }
+        Ok(())
+    })
 }
 
 pub fn reply_to_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
     let job = require_job(job_id)?;
-    if job.process_state == ProcessState::Alive && job.pid.is_some() {
+    if job.process_state == ProcessState::Alive {
         match job.backend {
             JobBackend::AppServer => bail!(
-                "Live replies to a running app-server job require the AgentView supervisor. Wait for this turn to finish, or stop it and reply after completion."
+                "Live replies to a running app-server job are not wired yet. Wait for this turn to finish, or stop it and reply after completion."
             ),
             JobBackend::FallbackExec => bail!(
                 "Live replies to a running Codex exec session require the app-server backend. Wait for this turn to finish, or stop it and resume."
@@ -162,12 +159,10 @@ pub fn reply_to_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
     if job.codex_thread_id.is_none() {
         bail!("Job {job_id} has no Codex thread id yet");
     }
-    let worker_mode = match job.backend {
-        JobBackend::FallbackExec => "reply",
-        JobBackend::AppServer => "app-server-reply",
+    let pid = match job.backend {
+        JobBackend::FallbackExec => spawn_worker(job_id, "reply", Some(prompt), &job.cwd)?.id(),
+        JobBackend::AppServer => supervisor_start_app_server_turn(job_id, prompt, true)?,
     };
-    let child = spawn_worker(job_id, worker_mode, Some(prompt), &job.cwd)?;
-    let pid = child.id();
     update_job(job_id, |job| {
         job.status = JobStatus::Working;
         job.process_state = ProcessState::Alive;
@@ -183,18 +178,16 @@ pub fn reply_to_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
 
 pub fn respawn_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
     let job = require_job(job_id)?;
-    if job.process_state == ProcessState::Alive && job.pid.is_some() {
+    if job.process_state == ProcessState::Alive {
         bail!("Job {job_id} is already running");
     }
     if job.codex_thread_id.is_none() {
         bail!("Job {job_id} has no Codex thread id yet");
     }
-    let worker_mode = match job.backend {
-        JobBackend::FallbackExec => "resume",
-        JobBackend::AppServer => "app-server-resume",
+    let pid = match job.backend {
+        JobBackend::FallbackExec => spawn_worker(job_id, "resume", Some(prompt), &job.cwd)?.id(),
+        JobBackend::AppServer => supervisor_start_app_server_turn(job_id, prompt, true)?,
     };
-    let child = spawn_worker(job_id, worker_mode, Some(prompt), &job.cwd)?;
-    let pid = child.id();
     update_job(job_id, |job| {
         job.status = JobStatus::Working;
         job.process_state = ProcessState::Alive;
@@ -210,6 +203,11 @@ pub fn respawn_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
 
 pub fn stop_job(job_id: &str) -> Result<()> {
     let job = require_job(job_id)?;
+    if job.backend == JobBackend::AppServer && job.process_state == ProcessState::Alive {
+        bail!(
+            "Stopping a running app-server job requires supervisor turn/interrupt routing, which is not wired yet."
+        );
+    }
     if let Some(pid) = job.pid {
         signal_term(pid);
     }

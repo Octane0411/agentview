@@ -478,8 +478,15 @@ Current checkpoint:
 
 - Hidden `agentview __supervisor` starts a local Unix socket supervisor process.
 - Hidden `agentview __supervisor-ping` verifies the local IPC path.
-- The supervisor does not own Codex app-server sessions yet; it is only the
-  process and IPC skeleton for the next step.
+- Hidden `agentview __supervisor-shutdown` stops the local supervisor.
+- App-server-backed `agentview run`, `agentview reply`, and `agentview respawn`
+  now submit execution requests through supervisor IPC instead of spawning an
+  AgentView worker process.
+- The supervisor starts the Codex app-server turn on a background thread and
+  keeps the app-server child under the supervisor process while the turn runs.
+- Stop/live-reply routing to an already running app-server turn is still
+  pending; the next step is to keep an addressable running-session map inside
+  the supervisor and route `turn/interrupt`.
 
 ### Phase 4: Hosted Codex Source Spike
 

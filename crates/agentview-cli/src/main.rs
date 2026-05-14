@@ -6,7 +6,7 @@ use agentview_core::jobs::{
 };
 use agentview_core::schema::{Job, JobStatus};
 use agentview_core::store::{list_jobs, read_job_last, require_job, tail_job_events};
-use agentview_core::supervisor::{run_supervisor, supervisor_ping};
+use agentview_core::supervisor::{run_supervisor, supervisor_ping, supervisor_shutdown};
 use agentview_core::util::{relative_time, truncate};
 use agentview_core::worker::worker_main;
 use anyhow::{Result, bail};
@@ -106,6 +106,8 @@ enum Commands {
     },
     #[command(hide = true, name = "__supervisor-ping")]
     SupervisorPing,
+    #[command(hide = true, name = "__supervisor-shutdown")]
+    SupervisorShutdown,
     #[command(hide = true, name = "__worker")]
     Worker {
         job_id: String,
@@ -157,6 +159,11 @@ fn run() -> Result<()> {
         Some(Commands::Supervisor { once }) => run_supervisor(once),
         Some(Commands::SupervisorPing) => {
             println!("{}", supervisor_ping(Duration::from_secs(2))?);
+            Ok(())
+        }
+        Some(Commands::SupervisorShutdown) => {
+            supervisor_shutdown()?;
+            println!("shutdown");
             Ok(())
         }
         Some(Commands::Worker {
