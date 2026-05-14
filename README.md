@@ -89,8 +89,7 @@ preferences.
   `patches/codex`.
 - Direct library-hosted Codex TUI is still the target shape.
 - The fallback `codex exec` backend cannot receive live replies while running.
-- PR URLs from app-server output are tracked and can be resolved through
-  `gh pr view`; TUI auto-refresh of external PR status is still limited.
+- PR URLs from app-server output are tracked and refreshed through `gh pr view`.
 
 ## Development
 

@@ -266,6 +266,8 @@ Current checkpoint:
 - CLI `agentview list` and `agentview peek` refresh PR status through
   `gh pr view`, mapping GitHub state to the documented colors:
   `green`, `yellow`, `purple`, and `grey`.
+- The list TUI refreshes visible PR status through the same resolver, throttled
+  to at most once per minute.
 
 Acceptance:
 
@@ -1107,5 +1109,4 @@ The next implementation work should follow this order:
      leaving patch changes applied in the submodule.
    - Document the tested Codex CLI/source version after every bump.
 3. Then fill the remaining parity gaps.
-   - TUI-side throttled PR status refresh.
    - Broader dirty-worktree removal coverage in real-Codex PTY E2E.

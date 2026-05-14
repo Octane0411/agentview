@@ -1,7 +1,7 @@
 use agentview_core::codex::attach_codex;
 use agentview_core::jobs::{
-    DispatchOptions, dispatch_job, pin_job, remove_job, rename_job, reorder_jobs, reply_to_job,
-    stop_job,
+    DispatchOptions, dispatch_job, pin_job, refresh_visible_pr_statuses, remove_job, rename_job,
+    reorder_jobs, reply_to_job, stop_job,
 };
 use agentview_core::schema::{Job, JobStatus};
 use agentview_core::store::{
@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 const GROUP_BY_PREFERENCE: &str = "tui.groupBy";
+const PR_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 enum Row {
@@ -105,6 +106,7 @@ struct App {
     collapsed_groups: HashSet<String>,
     last_delete: Option<LastDelete>,
     last_ctrl_c: Option<Instant>,
+    last_pr_status_refresh: Option<Instant>,
     last_refresh: Instant,
 }
 
@@ -123,6 +125,7 @@ impl Default for App {
             collapsed_groups: HashSet::new(),
             last_delete: None,
             last_ctrl_c: None,
+            last_pr_status_refresh: None,
             last_refresh: Instant::now(),
         }
     }
@@ -171,6 +174,7 @@ impl App {
     fn refresh(&mut self) -> Result<()> {
         let initial_refresh = self.rows.is_empty();
         self.jobs = list_jobs(false)?;
+        self.refresh_pr_statuses_if_due()?;
         self.build_rows();
         if self.selected >= self.rows.len() {
             self.selected = self.rows.len().saturating_sub(1);
@@ -182,6 +186,31 @@ impl App {
         }
         self.last_refresh = Instant::now();
         Ok(())
+    }
+
+    fn refresh_pr_statuses_if_due(&mut self) -> Result<()> {
+        let now = Instant::now();
+        if !self.should_refresh_pr_statuses(now)
+            || !self.jobs.iter().any(|job| !job.pr_refs.is_empty())
+        {
+            return Ok(());
+        }
+
+        self.last_pr_status_refresh = Some(now);
+        match refresh_visible_pr_statuses() {
+            Ok(()) => {
+                self.jobs = list_jobs(false)?;
+            }
+            Err(error) => {
+                self.message = truncate(format!("pr status refresh failed: {error}"), 120);
+            }
+        }
+        Ok(())
+    }
+
+    fn should_refresh_pr_statuses(&self, now: Instant) -> bool {
+        self.last_pr_status_refresh
+            .is_none_or(|last| now.duration_since(last) >= PR_STATUS_REFRESH_INTERVAL)
     }
 
     fn load_preferences(&mut self) -> Result<()> {
@@ -1254,6 +1283,20 @@ mod tests {
         assert!(!app.handle_ctrl_c());
         assert_eq!(app.message, "press Ctrl+C again to exit");
         assert!(app.handle_ctrl_c());
+    }
+
+    #[test]
+    fn pr_status_refresh_is_throttled() {
+        let now = Instant::now();
+        let mut app = App::default();
+
+        assert!(app.should_refresh_pr_statuses(now));
+
+        app.last_pr_status_refresh = Some(now - Duration::from_secs(59));
+        assert!(!app.should_refresh_pr_statuses(now));
+
+        app.last_pr_status_refresh = Some(now - PR_STATUS_REFRESH_INTERVAL);
+        assert!(app.should_refresh_pr_statuses(now));
     }
 
     fn job(id: &str, status: JobStatus, pinned: bool, pr: bool) -> Job {
