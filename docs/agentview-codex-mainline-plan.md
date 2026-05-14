@@ -118,10 +118,8 @@ Still missing from the normal path:
 
 - Live reply to a running app-server turn is not wired yet.
 - Helper packaging/version-update workflow is still manual.
-- Full list TUI PTY automation still needs hardening. The hosted attach path is
-  covered by a real PTY E2E, and the list Enter path has been manually verified,
-  but the expect harness for exiting the outer list TUI is not yet robust enough
-  to make it the primary regression script.
+- List TUI PTY automation covers the core enter/detach/re-enter path, but still
+  does not cover dirty worktree removal or list-level needs-input decisions.
 - Direct library-hosted Codex TUI remains the preferred long-term shape; the
   current MVP uses the helper-process bridge.
 
@@ -675,21 +673,23 @@ Current checkpoint:
 - Focused patched Codex test was verified on 2026-05-14:
   `cargo test --manifest-path target/agentview-codex-patched/codex/codex-rs/Cargo.toml -p codex-tui hosted_detach --lib`.
 - `tools/e2e-hosted-detach.sh` now runs a real Codex PTY regression:
-  dispatch a websocket app-server job, open the same thread through
-  `agentview __hosted-attach --no-alt-screen`, detach with Left Arrow, verify
-  the same turn is still running, re-enter and detach again, reject
+  dispatch a websocket app-server job, open `agentview`, press Enter on the
+  selected running row, detach with Left Arrow, verify the outer list refreshed,
+  verify the same turn is still running, re-enter and detach again, reject
   `conversation interrupted` / `hosted_attach_quit` markers, then wait for the
-  marker response. Verified on 2026-05-14 with job `av_mp59vsfi_177l`, thread
-  `019e25c4-8f80-7920-98db-613f709f0256`, turn
-  `019e25c4-8fc5-73a3-ba06-a71c2e2c3014`, marker
-  `AGENTVIEW_HOSTED_DETACH_E2E_1778750099_OK`.
+  marker response. Verified on 2026-05-14 with job `av_mp5afgox_18z5`, thread
+  `019e25d2-9137-78f1-9a6a-285ee1bb3a44`, turn
+  `019e25d2-917b-7922-ab3c-f39327424aee`, marker
+  `AGENTVIEW_HOSTED_DETACH_E2E_1778751016_OK`.
 - The full list TUI path was manually verified on 2026-05-14 with job
   `av_mp59omyw_16cy`: pressing Enter from `agentview` opened the hosted Codex
   UI, Left Arrow emitted `hosted_attach_detached`, the same turn continued, and
-  the marker `AGENTVIEW_LIST_TUI_E2E_1778749765_OK` completed. The automated
-  expect harness for cleanly exiting the outer list TUI after detach is still
-  pending, so the committed repeatable script currently covers the hidden
-  hosted attach command rather than the full-screen list wrapper.
+  the marker `AGENTVIEW_LIST_TUI_E2E_1778749765_OK` completed.
+- The repeatable E2E script now drives the full-screen list wrapper: open
+  `agentview`, press Enter on the selected running row, detach with Left Arrow,
+  let the outer list refresh and emit `agentview_list_returned_from_attach`,
+  verify the same turn is still running, re-enter, detach again, and wait for
+  the marker response.
 
 Exit criteria:
 
@@ -794,9 +794,10 @@ tools/e2e-hosted-detach.sh
 
 This script consumes real Codex tokens. It requires `codex`, `expect`, a built
 `target/debug/agentview`, and a built
-`target/debug/agentview-codex-hosted`. It validates the hosted session core
-with a PTY, but it does not yet drive the outer list TUI as the default
-regression path.
+`target/debug/agentview-codex-hosted`. It validates the full-screen list TUI
+enter/detach/re-enter path through a PTY. The script sets
+`AGENTVIEW_TUI_EXIT_AFTER_ATTACH=1`, a test hook that exits only after the
+outer list has returned from attach and refreshed.
 
 Regression tests:
 
@@ -808,20 +809,15 @@ Regression tests:
 
 The next implementation work should follow this order:
 
-1. Harden the full list TUI PTY regression.
-   - Drive `agentview` with a selected running row.
-   - Press Enter to open the hosted Codex view.
-   - Detach with Left Arrow and assert the outer list redraws.
-   - Exit the outer list cleanly in the harness without relying on PTY close.
-2. Wire live reply/approval for already running app-server turns.
+1. Wire live reply/approval for already running app-server turns.
    - `needs_input` rows should expose list-level reply/approval where possible.
    - Entering the hosted Codex view remains the canonical full-session approval
      path.
-3. Formalize helper packaging and Codex update flow.
+2. Formalize helper packaging and Codex update flow.
    - Keep `tools/check-codex-patches.sh` and `tools/build-codex-hosted-helper.sh`
      as the required checks when bumping `third_party/codex`.
    - Document the tested Codex CLI/source version after every bump.
-4. Then fill the remaining parity gaps.
+3. Then fill the remaining parity gaps.
    - Live reply/approval while a turn is in `needs_input`.
    - Dirty worktree cleanup protection.
    - Completed/failed grouping and PR status extraction.

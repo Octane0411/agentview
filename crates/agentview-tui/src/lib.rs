@@ -3,8 +3,8 @@ use agentview_core::jobs::{
     DispatchOptions, dispatch_job, pin_job, remove_job, rename_job, reply_to_job, stop_job,
 };
 use agentview_core::schema::{Job, JobStatus};
-use agentview_core::store::{list_jobs, read_job_last};
-use agentview_core::util::{relative_time, truncate};
+use agentview_core::store::{append_job_event, list_jobs, read_job_last};
+use agentview_core::util::{now_iso, relative_time, truncate};
 use anyhow::{Result, bail};
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -18,6 +18,7 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Stdout};
 use std::time::{Duration, Instant};
@@ -222,15 +223,9 @@ impl App {
         match key {
             KeyEvent {
                 code: KeyCode::Char('c'),
-                modifiers: KeyModifiers::CONTROL,
+                modifiers,
                 ..
-            } => {
-                if self.input.is_empty() {
-                    return Ok(true);
-                }
-                self.input.clear();
-                self.message.clear();
-            }
+            } if modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
             KeyEvent {
                 code: KeyCode::Esc, ..
             } => {
@@ -252,22 +247,26 @@ impl App {
             KeyEvent {
                 code: KeyCode::Right,
                 ..
-            } => self.attach_selected(terminal)?,
+            } => {
+                if self.attach_selected(terminal)? {
+                    return Ok(true);
+                }
+            }
             KeyEvent {
                 code: KeyCode::Char('x'),
-                modifiers: KeyModifiers::CONTROL,
+                modifiers,
                 ..
-            } => self.stop_or_delete()?,
+            } if modifiers.contains(KeyModifiers::CONTROL) => self.stop_or_delete()?,
             KeyEvent {
                 code: KeyCode::Char('t'),
-                modifiers: KeyModifiers::CONTROL,
+                modifiers,
                 ..
-            } => self.toggle_pin()?,
+            } if modifiers.contains(KeyModifiers::CONTROL) => self.toggle_pin()?,
             KeyEvent {
                 code: KeyCode::Char('s'),
-                modifiers: KeyModifiers::CONTROL,
+                modifiers,
                 ..
-            } => {
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.group_by = if self.group_by == GroupBy::State {
                     GroupBy::Cwd
                 } else {
@@ -292,7 +291,11 @@ impl App {
             KeyEvent {
                 code: KeyCode::Enter,
                 ..
-            } => self.submit(terminal)?,
+            } => {
+                if self.submit(terminal)? {
+                    return Ok(true);
+                }
+            }
             KeyEvent {
                 code: KeyCode::Backspace,
                 ..
@@ -328,7 +331,7 @@ impl App {
         }
     }
 
-    fn submit(&mut self, terminal: &mut Term) -> Result<()> {
+    fn submit(&mut self, terminal: &mut Term) -> Result<bool> {
         let text = self.input.trim().to_string();
         self.input.clear();
         let selected = self.selected_job();
@@ -339,7 +342,7 @@ impl App {
                 self.message = format!("renamed {}", job.id);
                 self.refresh()?;
             }
-            return Ok(());
+            return Ok(false);
         }
 
         if !text.is_empty() {
@@ -350,7 +353,7 @@ impl App {
                         Err(error) => self.message = error.to_string(),
                     }
                     self.refresh()?;
-                    return Ok(());
+                    return Ok(false);
                 }
             }
             match dispatch_job(&text, DispatchOptions::default()) {
@@ -358,15 +361,15 @@ impl App {
                 Err(error) => self.message = error.to_string(),
             }
             self.refresh()?;
-            return Ok(());
+            return Ok(false);
         }
 
         self.attach_selected(terminal)
     }
 
-    fn attach_selected(&mut self, terminal: &mut Term) -> Result<()> {
+    fn attach_selected(&mut self, terminal: &mut Term) -> Result<bool> {
         let Some(job) = self.selected_job() else {
-            return Ok(());
+            return Ok(false);
         };
 
         disable_raw_mode()?;
@@ -374,6 +377,7 @@ impl App {
         terminal.show_cursor()?;
 
         let attach_result = attach_codex(&job);
+        let attach_ok = attach_result.is_ok();
         if let Err(error) = attach_result {
             eprintln!("{error}");
             eprintln!("Press Enter to return to Agent View.");
@@ -385,7 +389,15 @@ impl App {
         enable_raw_mode()?;
         terminal.clear()?;
         self.refresh()?;
-        Ok(())
+        let _ = append_job_event(
+            &job.id,
+            &json!({
+                "type": "agentview_list_returned_from_attach",
+                "ok": attach_ok,
+                "timestamp": now_iso()
+            }),
+        );
+        Ok(std::env::var_os("AGENTVIEW_TUI_EXIT_AFTER_ATTACH").is_some())
     }
 
     fn stop_or_delete(&mut self) -> Result<()> {

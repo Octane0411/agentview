@@ -125,7 +125,7 @@ job_completed_with_marker() {
   [[ "$PEEK_OUTPUT" == *"completed"* && "$PEEK_OUTPUT" == *"$marker"* ]]
 }
 
-attach_hidden_and_detach() {
+attach_from_list_and_detach() {
   local label="$1"
   local hold_seconds="$2"
   local expect_file="$TMP_ROOT/attach-$label.exp"
@@ -141,14 +141,16 @@ stty rows 42 columns 132
 set env(AGENTVIEW_HOME) "$STORE"
 set env(NO_COLOR) "1"
 set env(AGENTVIEW_CODEX_HOSTED) "$HOSTED_BIN"
+set env(AGENTVIEW_TUI_EXIT_AFTER_ATTACH) "1"
 set env(COLUMNS) "132"
 set env(LINES) "42"
-spawn "$AGENTVIEW_BIN" __hosted-attach --no-alt-screen "$JOB_ID"
+spawn "$AGENTVIEW_BIN"
+after 1000
+send "\r"
 after $hold_ms
 send "\033\[D"
 expect {
-  "detached $JOB_ID" { exit 0 }
-  eof { exit 12 }
+  eof { exit 0 }
   timeout { exit 11 }
 }
 EOF
@@ -170,6 +172,13 @@ assert_detach_logs() {
     printf '%s\n' "$logs" >&2
     exit 1
   fi
+  local returned_count
+  returned_count="$(grep -c "agentview_list_returned_from_attach" <<<"$logs" || true)"
+  if (( returned_count < 2 )); then
+    echo "error: expected at least two list-return events, got $returned_count" >&2
+    printf '%s\n' "$logs" >&2
+    exit 1
+  fi
   if grep -Eiq "conversation interrupted|hosted_attach_quit|\"status\":\"interrupted\"" <<<"$logs"; then
     echo "error: detach emitted an interruption or quit marker" >&2
     printf '%s\n' "$logs" >&2
@@ -186,10 +195,10 @@ main() {
   wait_until "active Codex turn" 90 job_has_active_turn
   remember_active_ids
 
-  attach_hidden_and_detach first 7
+  attach_from_list_and_detach first 15
   wait_until "same turn after first detach" 20 job_still_running_same_turn
 
-  attach_hidden_and_detach second 4
+  attach_from_list_and_detach second 8
   wait_until "same turn after second detach" 20 job_still_running_same_turn
 
   assert_detach_logs
