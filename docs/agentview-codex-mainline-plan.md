@@ -400,8 +400,10 @@ Already implemented:
 Still missing from the normal path:
 
 - Helper packaging/version-update workflow is still manual.
-- List TUI PTY automation covers the core enter/detach/re-enter path, but still
-  does not cover dirty worktree removal or hosted attach during `needs_input`.
+- List TUI PTY automation covers enter/detach/re-enter and dirty-worktree
+  remove protection. Fake websocket integration covers hosted attach while a
+  job is in `needs_input`; deterministic real-Codex PTY coverage for that
+  state is still pending.
 - Direct library-hosted Codex TUI remains the preferred long-term shape; the
   current MVP uses the helper-process bridge.
 
@@ -1115,9 +1117,12 @@ Regression tests:
 The next implementation work should follow this order:
 
 1. Expand hosted-view and PTY coverage around `needs_input`.
-   - Attach while a row is in `needs_input`.
-   - Answer from either AgentView list or hosted Codex view.
-   - Detach/re-enter after the request is resolved.
+   - Keep the fake websocket integration for attach while a row is in
+     `needs_input`.
+   - Add deterministic real-Codex PTY coverage if Codex exposes a stable way to
+     force a request-user-input or approval state.
+   - Continue verifying that list-level reply can resolve the pending request
+     after hosted attach.
 2. Formalize helper packaging and Codex update flow.
    - Keep `tools/build-dev.sh`, `tools/check-codex-patches.sh`, and
      `tools/build-codex-hosted-helper.sh` as required development checks.
