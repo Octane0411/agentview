@@ -6,11 +6,13 @@ use agentview_core::jobs::{
 };
 use agentview_core::schema::{Job, JobStatus};
 use agentview_core::store::{list_jobs, read_job_last, require_job, tail_job_events};
+use agentview_core::supervisor::{run_supervisor, supervisor_ping};
 use agentview_core::util::{relative_time, truncate};
 use agentview_core::worker::worker_main;
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -97,6 +99,13 @@ enum Commands {
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
+    #[command(hide = true, name = "__supervisor")]
+    Supervisor {
+        #[arg(long)]
+        once: bool,
+    },
+    #[command(hide = true, name = "__supervisor-ping")]
+    SupervisorPing,
     #[command(hide = true, name = "__worker")]
     Worker {
         job_id: String,
@@ -145,6 +154,11 @@ fn run() -> Result<()> {
         Some(Commands::Respawn { job_id, prompt }) => cmd_respawn(&job_id, &prompt.join(" ")),
         Some(Commands::Doctor) => cmd_doctor(),
         Some(Commands::AppServerSmoke { cwd }) => cmd_app_server_smoke(cwd),
+        Some(Commands::Supervisor { once }) => run_supervisor(once),
+        Some(Commands::SupervisorPing) => {
+            println!("{}", supervisor_ping(Duration::from_secs(2))?);
+            Ok(())
+        }
         Some(Commands::Worker {
             job_id,
             mode,

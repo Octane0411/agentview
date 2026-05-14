@@ -459,9 +459,11 @@ Current checkpoint:
 
 ### Phase 3: Supervisor
 
+Status: started.
+
 Tasks:
 
-1. Add hidden supervisor command or daemon mode.
+1. [x] Add hidden supervisor command or daemon mode.
 2. Supervisor owns the app-server runtime and job/thread mapping.
 3. TUI and CLI talk to supervisor over local IPC.
 4. Closing AgentView list does not kill running Codex turns.
@@ -471,6 +473,13 @@ Exit criteria:
 
 - Running turn survives list detach/reopen.
 - No running session depends on a visible terminal.
+
+Current checkpoint:
+
+- Hidden `agentview __supervisor` starts a local Unix socket supervisor process.
+- Hidden `agentview __supervisor-ping` verifies the local IPC path.
+- The supervisor does not own Codex app-server sessions yet; it is only the
+  process and IPC skeleton for the next step.
 
 ### Phase 4: Hosted Codex Source Spike
 

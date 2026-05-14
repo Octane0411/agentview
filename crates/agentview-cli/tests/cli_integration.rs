@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -183,6 +183,52 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
         serde_json::from_str(&fs::read_to_string(store.path().join("agentview.json")).unwrap())
             .unwrap();
     assert_eq!(store_json["jobs"][&job_id]["backend"], "app_server");
+}
+
+#[test]
+fn hidden_supervisor_accepts_ping_over_local_socket() {
+    let env = TestEnv::new();
+    let codex = env.fake_codex();
+    let store = TempDir::new().unwrap();
+
+    let mut child = env
+        .agentview(&store, &codex)
+        .args(["__supervisor", "--once"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut pong = String::new();
+    wait_until(Duration::from_secs(5), || {
+        let output = env
+            .agentview(&store, &codex)
+            .arg("__supervisor-ping")
+            .output()
+            .unwrap();
+        if output.status.success() {
+            pong = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            true
+        } else {
+            false
+        }
+    });
+
+    assert_eq!(pong, "pong");
+    let status = child.wait().unwrap();
+    assert!(
+        status.success(),
+        "supervisor exited with {status}; stderr:\n{}",
+        child
+            .stderr
+            .take()
+            .map(|mut stderr| {
+                let mut text = String::new();
+                let _ = std::io::Read::read_to_string(&mut stderr, &mut text);
+                text
+            })
+            .unwrap_or_default()
+    );
 }
 
 struct TestEnv {
