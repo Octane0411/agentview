@@ -20,6 +20,7 @@ fn dispatch_peek_attach_and_remove_with_fake_codex() {
         .agentview(&store, &codex)
         .args([
             "run",
+            "--fallback-exec",
             "--cwd",
             repo.to_str().unwrap(),
             "write a fake summary",
@@ -102,7 +103,6 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
         .agentview(&store, &codex)
         .args([
             "run",
-            "--app-server",
             "--cwd",
             repo.to_str().unwrap(),
             "write a fake app-server summary",
@@ -236,7 +236,6 @@ fn app_server_stop_routes_turn_interrupt_through_supervisor() {
         .agentview(&store, &codex)
         .args([
             "run",
-            "--app-server",
             "--cwd",
             repo.to_str().unwrap(),
             "start a slow fake app-server task",

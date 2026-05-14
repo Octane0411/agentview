@@ -21,8 +21,8 @@ pub struct DispatchOptions {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DispatchBackend {
-    #[default]
     FallbackExec,
+    #[default]
     AppServer,
 }
 

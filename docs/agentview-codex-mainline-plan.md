@@ -537,11 +537,24 @@ Exit criteria:
 
 Tasks:
 
-1. Make app-server-backed dispatch the default for `agentview run` and TUI input.
-2. Make hosted view the default `Enter` behavior.
-3. Hide fallback `codex exec/resume` behind an explicit flag or debug command.
+1. [x] Make app-server-backed dispatch the default for `agentview run` and TUI
+   input.
+2. [x] Make hosted view the default `Enter` behavior for app-server-backed jobs.
+3. [x] Hide fallback `codex exec/resume` behind an explicit debug flag.
 4. Remove misleading copy that suggests fallback attach has Agent View parity.
-5. Update tests to fail if normal path invokes `codex exec` or `codex resume`.
+5. [x] Update tests to fail if normal path invokes `codex exec` or
+   `codex resume`.
+
+Current checkpoint:
+
+- `DispatchOptions::default()` now selects the app-server backend.
+- CLI `agentview run` defaults to supervisor/app-server dispatch.
+- TUI submit uses `DispatchOptions::default()`, so it also defaults to
+  supervisor/app-server dispatch.
+- Hidden `agentview run --fallback-exec ...` keeps the old `codex exec --json`
+  path available for regression coverage and emergency debugging.
+- The normal app-server integration test dispatches without `--app-server` and
+  asserts fallback `codex exec` / `codex resume` output is absent.
 
 Exit criteria:
 

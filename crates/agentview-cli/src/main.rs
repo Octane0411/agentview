@@ -41,6 +41,8 @@ enum Commands {
         attach: bool,
         #[arg(long, hide = true)]
         app_server: bool,
+        #[arg(long, hide = true)]
+        fallback_exec: bool,
         #[arg(required = true)]
         task: Vec<String>,
     },
@@ -140,8 +142,18 @@ fn run() -> Result<()> {
             sandbox,
             attach,
             app_server,
+            fallback_exec,
             task,
-        }) => cmd_run(cwd, model, profile, sandbox, attach, app_server, task),
+        }) => cmd_run(
+            cwd,
+            model,
+            profile,
+            sandbox,
+            attach,
+            app_server,
+            fallback_exec,
+            task,
+        ),
         Some(Commands::List { all }) => cmd_list(all),
         Some(Commands::Peek { job_id }) => cmd_peek(&job_id),
         Some(Commands::Logs { job_id, limit }) => cmd_logs(&job_id, limit.unwrap_or(80)),
@@ -191,11 +203,15 @@ fn cmd_run(
     sandbox: Option<String>,
     attach: bool,
     app_server: bool,
+    fallback_exec: bool,
     task: Vec<String>,
 ) -> Result<()> {
     let prompt = task.join(" ").trim().to_string();
     if prompt.is_empty() {
         bail!("Usage: agentview run [--cwd DIR] [--model MODEL] [--attach] \"task\"");
+    }
+    if app_server && fallback_exec {
+        bail!("--app-server and --fallback-exec cannot be used together");
     }
     let job = dispatch_job(
         &prompt,
@@ -204,10 +220,10 @@ fn cmd_run(
             model,
             profile,
             sandbox,
-            backend: if app_server {
-                DispatchBackend::AppServer
-            } else {
+            backend: if fallback_exec {
                 DispatchBackend::FallbackExec
+            } else {
+                DispatchBackend::AppServer
             },
             ..Default::default()
         },
