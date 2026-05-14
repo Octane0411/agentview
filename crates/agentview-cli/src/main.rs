@@ -1,3 +1,4 @@
+use agentview_codex_app_server::{AppServerClient, ThreadStartOptions};
 use agentview_core::codex::attach_codex;
 use agentview_core::jobs::{
     DispatchOptions, RemoveOptions, archive_job, dispatch_job, doctor, pin_job, remove_job,
@@ -89,6 +90,11 @@ enum Commands {
     Respawn { job_id: String, prompt: Vec<String> },
     #[command(about = "Check local dependencies")]
     Doctor,
+    #[command(hide = true, name = "__app-server-smoke")]
+    AppServerSmoke {
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
     #[command(hide = true, name = "__worker")]
     Worker {
         job_id: String,
@@ -135,6 +141,7 @@ fn run() -> Result<()> {
         Some(Commands::Pin { job_id }) => cmd_pin(&job_id),
         Some(Commands::Respawn { job_id, prompt }) => cmd_respawn(&job_id, &prompt.join(" ")),
         Some(Commands::Doctor) => cmd_doctor(),
+        Some(Commands::AppServerSmoke { cwd }) => cmd_app_server_smoke(cwd),
         Some(Commands::Worker {
             job_id,
             mode,
@@ -304,6 +311,32 @@ fn cmd_doctor() -> Result<()> {
         "rustc: {}",
         report.rustc.unwrap_or_else(|| "missing".to_string())
     );
+    Ok(())
+}
+
+fn cmd_app_server_smoke(cwd: Option<PathBuf>) -> Result<()> {
+    let mut client = AppServerClient::spawn_stdio()?;
+    let initialized = client.initialize()?;
+    println!("codex app-server: {}", initialized.user_agent);
+    println!("codex home: {}", initialized.codex_home.display());
+    println!(
+        "platform: {}/{}",
+        initialized.platform_family, initialized.platform_os
+    );
+
+    if cwd.is_some() {
+        let thread = client.start_thread(ThreadStartOptions {
+            cwd,
+            ..Default::default()
+        })?;
+        println!(
+            "thread: {}  status: {}",
+            thread.thread.id,
+            thread.thread.status_label()
+        );
+    }
+
+    client.shutdown()?;
     Ok(())
 }
 

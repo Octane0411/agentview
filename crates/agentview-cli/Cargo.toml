@@ -10,6 +10,7 @@ name = "agentview"
 path = "src/main.rs"
 
 [dependencies]
+agentview-codex-app-server.workspace = true
 agentview-core.workspace = true
 agentview-tui.workspace = true
 anyhow.workspace = true
