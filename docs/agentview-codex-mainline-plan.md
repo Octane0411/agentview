@@ -115,6 +115,38 @@ Only these bridge crates may touch Codex crates:
 - `agentview-codex-hosted`
 - `agentview-codex-app-server` while the bridge is still being migrated
 
+## Verified Codex Source Seams
+
+These seams were verified against `third_party/codex` at `rust-v0.130.0`.
+They define the smallest place where AgentView should attach to Codex source.
+
+- `codex-rs/tui/src/lib.rs` exposes `run_main(...)`.
+  This already supports a remote app-server descriptor and a direct
+  `resume_session_id`, so hosted mode does not need Codex's resume picker.
+- `codex-rs/tui/src/resume_picker.rs` defines `SessionSelection::Resume` and
+  `SessionTarget { thread_id, path }`.
+  Hosted mode should construct this selection directly for the selected
+  AgentView job.
+- `codex-rs/tui/src/app.rs` defines `App::run(...)`, `AppExitInfo`, and
+  `ExitReason`.
+  This is the boundary that needs a hosted run option and a detached exit
+  reason.
+- `codex-rs/tui/src/app/input.rs` handles top-level key events before they are
+  forwarded to `ChatWidget`.
+  This is where hosted mode should intercept Left Arrow before normal composer
+  cursor movement.
+- `codex-rs/tui/src/chatwidget.rs` already exposes checks for an empty
+  composer and inactive modal/popup state.
+  Hosted detach should only fire when those checks say the key is safe to
+  steal.
+- `codex-rs/tui/src/app_server_session.rs` owns shutdown of the app-server
+  client.
+  Hosted detach must not call the shutdown path for an AgentView-owned
+  app-server connection.
+
+The important consequence: AgentView does not need to rewrite or mirror the
+Codex TUI. It needs a narrow hosted-session extension point in Codex TUI.
+
 ## Preferred Integration Shape
 
 Preferred shape: library-hosted Codex TUI in the AgentView process.
@@ -137,13 +169,30 @@ Why this is preferred:
 Required Codex source patch surface:
 
 1. Export a hosted-session module from `codex-tui`.
-2. Accept an existing app-server client/connection or connection descriptor.
-3. Open a specific thread id without showing Codex's resume picker.
+2. Accept an app-server connection descriptor first; later accept an existing
+   app-server client if the client type can be shared cleanly.
+3. Open a specific thread id by constructing `SessionSelection::Resume`
+   directly, without showing Codex's resume picker.
 4. Reuse Codex transcript cells, composer, approvals, diffs, command output, and
    request-user-input UI unchanged.
 5. Add host-owned detach binding support.
-6. Return `HostedSessionExit::Detached` without interrupting the active turn.
+6. Return `HostedSessionExit::Detached` without interrupting the active turn and
+   without shutting down the AgentView-owned app-server.
 7. Render a host footer hint such as `Left Arrow AgentView`.
+
+Concrete patch behavior:
+
+- Add a hosted config/run mode to Codex TUI.
+- Add a detached exit reason or hosted-only exit result.
+- In hosted mode, intercept Left Arrow only when:
+  - no overlay is open;
+  - no modal or popup is active;
+  - composer text is empty;
+  - the key event is a press/repeat, not release.
+- In hosted mode, detach exits the view loop but does not send
+  `ShutdownFirst`, does not interrupt the turn, and does not close the
+  app-server owned by AgentView.
+- Outside hosted mode, Codex key behavior remains unchanged.
 
 Target hosted API:
 
@@ -347,14 +396,16 @@ Exit criteria:
 
 Tasks:
 
-1. Patch `codex-tui` to expose `run_hosted_session_view`.
-2. Build either:
-   - `agentview-codex-hosted` library bridge, preferred; or
-   - `agentview-codex-hosted` helper binary, temporary fallback.
-3. Open an app-server-created thread by id.
-4. Render Codex native conversation UI.
-5. Capture Left Arrow as detach when safe.
-6. Return to AgentView list without interrupting the turn.
+1. Create the Codex patch in `patches/codex` instead of carrying untracked
+   submodule edits.
+2. Patch `codex-tui` to expose `run_hosted_session_view`.
+3. Build `agentview-codex-hosted` as a bridge crate.
+4. If direct library hosting is blocked by terminal ownership or workspace
+   dependency shape, build a temporary hosted helper binary from the same patch.
+5. Open an app-server-created thread by id.
+6. Render Codex native conversation UI.
+7. Capture Left Arrow as detach when safe.
+8. Return to AgentView list without interrupting the turn.
 
 Exit criteria:
 
@@ -432,24 +483,15 @@ Regression tests:
 
 ## Immediate Next Step
 
-Do Phase 1, then immediately start Phase 4 as a spike.
+Phase 1 is done. The next implementation step is the Phase 4 spike:
 
-Reason:
-
-- Phase 2 and Phase 3 are necessary for production behavior.
-- But the riskiest unknown is whether we can expose and maintain a small Codex
-  hosted TUI patch.
-- We should prove the hosted view path early before spending more time polishing
-  list behavior.
-
-Concrete next commands:
-
-```bash
-git submodule add https://github.com/openai/codex third_party/codex
-cd third_party/codex && git checkout rust-v0.130.0
-mkdir -p patches/codex tools
-```
-
-Then inspect `third_party/codex/codex-rs/tui` and create the smallest patch that
-opens a specific thread id against an existing app-server connection and returns
-`Detached` on Left Arrow.
+1. Add a patch file under `patches/codex` that introduces hosted detach support
+   in `codex-tui`.
+2. Add `crates/agentview-codex-hosted` as the only AgentView crate allowed to
+   call the hosted Codex TUI API.
+3. Wire a hidden AgentView command that opens one app-server thread id through
+   hosted Codex TUI.
+4. Prove that Left Arrow returns to AgentView without a `conversation
+   interrupted` marker.
+5. After that works, move dispatch from `codex exec --json` to
+   app-server-backed runtime.
