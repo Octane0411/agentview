@@ -137,6 +137,15 @@ This installs both `agentview` and `agentview-codex-hosted` into the same bin
 directory. Set `BIN_DIR=/path/to/bin` to install somewhere other than
 `${CARGO_HOME:-$HOME/.cargo}/bin`.
 
+Build a release archive:
+
+```bash
+tools/package-release.sh
+```
+
+This writes `target/dist/agentview-<version>-<target>.tar.gz` with
+`agentview` and `agentview-codex-hosted` in the same `bin/` directory.
+
 ## Codex Source Updates
 
 Codex is pinned as a submodule:

@@ -538,14 +538,17 @@ Already implemented:
 - Paired local install script builds `agentview` and `agentview-codex-hosted`
   and installs both into the same bin directory, preserving sibling helper
   resolution outside `target/debug`.
+- Release archive script builds release-mode `agentview` plus release-mode
+  `agentview-codex-hosted` and packages both under the same `bin/` directory.
 - `agentview doctor` reports Codex CLI, `gh`, Rust, hosted helper resolution,
   the pinned Codex source ref, and the Codex patch queue count so packaging and
   update-flow problems are visible without opening the TUI.
 
 Still missing from the normal path:
 
-- Release packaging is still pending. The local paired installer covers
-  development installs only.
+- Signed installers, platform package managers, and multi-platform release
+  automation are still pending. The current release script produces a local
+  tarball for the host platform.
 - List TUI PTY automation covers enter/detach/re-enter and dirty-worktree
   remove protection. Fake websocket PTY integration now covers pressing Enter
   on a `needs_input` row, routing to the hosted helper, returning to the list,
@@ -610,6 +613,7 @@ agentview/
     check-codex-patches.sh
     build-codex-hosted-helper.sh
     install-local.sh
+    package-release.sh
 ```
 
 Pinned source:
@@ -1287,6 +1291,8 @@ The next implementation work should follow this order:
      `tools/build-codex-hosted-helper.sh` as required development checks.
    - [x] Keep release packaging separate from this local installer until the
      helper process is replaced or the release artifact layout is decided.
+   - [x] Add a release archive script that preserves the same sibling binary
+     layout in release builds.
 2. Expand hosted-view and PTY coverage around `needs_input`.
    - [x] Keep the fake websocket integration for attach while a row is in
      `needs_input`.
