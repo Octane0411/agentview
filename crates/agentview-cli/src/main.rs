@@ -419,10 +419,27 @@ fn cmd_respawn_all(prompt: &str) -> Result<()> {
 fn cmd_doctor() -> Result<()> {
     let report = doctor();
     println!("codex: {}", if report.codex { "ok" } else { "missing" });
+    println!("gh: {}", if report.gh { "ok" } else { "missing" });
     println!(
         "rustc: {}",
         report.rustc.unwrap_or_else(|| "missing".to_string())
     );
+    println!(
+        "hosted helper: {} ({})",
+        if report.hosted_helper_ok {
+            "ok"
+        } else {
+            "missing"
+        },
+        report.hosted_helper.display()
+    );
+    println!(
+        "codex source: {}",
+        report
+            .codex_source_ref
+            .unwrap_or_else(|| "missing".to_string())
+    );
+    println!("codex patches: {}", report.codex_patch_count);
     Ok(())
 }
 

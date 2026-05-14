@@ -54,6 +54,9 @@ Check dependencies:
 agentview doctor
 ```
 
+`doctor` checks the installed Codex CLI, `gh`, Rust, the hosted Codex helper,
+the pinned Codex source ref, and the local Codex patch queue count.
+
 ## TUI Shortcuts
 
 - `Up` / `Down`: select a session

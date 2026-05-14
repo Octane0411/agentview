@@ -7,10 +7,11 @@ use crate::supervisor::{
     supervisor_stop_app_server_turn,
 };
 use crate::util::{
-    command_exists, extract_pr_refs, make_job_id, now_iso, resolve_pr_ref_statuses,
+    command_exists, extract_pr_refs, make_job_id, now_iso, resolve_pr_ref_statuses, run_command,
     title_from_prompt,
 };
 use crate::worktree::{create_worktree, remove_worktree, worktree_has_changes};
+use agentview_codex_hosted::HostedHelper;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -51,7 +52,12 @@ pub struct ParsedDispatchPrompt {
 #[derive(Debug, Clone)]
 pub struct DoctorReport {
     pub codex: bool,
+    pub gh: bool,
     pub rustc: Option<String>,
+    pub hosted_helper: PathBuf,
+    pub hosted_helper_ok: bool,
+    pub codex_source_ref: Option<String>,
+    pub codex_patch_count: usize,
 }
 
 pub fn dispatch_job(prompt: &str, options: DispatchOptions) -> Result<Job> {
@@ -483,10 +489,60 @@ pub fn refresh_visible_pr_statuses() -> Result<()> {
 }
 
 pub fn doctor() -> DoctorReport {
+    let hosted_helper = HostedHelper::from_env_or_default().binary().to_path_buf();
     DoctorReport {
         codex: command_exists("codex"),
+        gh: command_exists("gh"),
         rustc: command_version("rustc"),
+        hosted_helper_ok: path_or_command_exists(&hosted_helper),
+        hosted_helper,
+        codex_source_ref: codex_source_ref(),
+        codex_patch_count: codex_patch_count(),
     }
+}
+
+fn path_or_command_exists(path: &Path) -> bool {
+    if path.components().count() > 1 || path.is_absolute() {
+        path.exists()
+    } else {
+        command_exists(&path.to_string_lossy())
+    }
+}
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+fn codex_source_dir() -> PathBuf {
+    repo_root().join("third_party").join("codex")
+}
+
+fn codex_source_ref() -> Option<String> {
+    let dir = codex_source_dir();
+    if !dir.exists() {
+        return None;
+    }
+    let output = run_command("git", &["rev-parse", "--short", "HEAD"], Some(&dir)).ok()?;
+    if output.code == 0 {
+        Some(output.stdout.trim().to_string()).filter(|value| !value.is_empty())
+    } else {
+        None
+    }
+}
+
+fn codex_patch_count() -> usize {
+    let dir = repo_root().join("patches").join("codex");
+    std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "patch"))
+        .count()
 }
 
 pub fn parse_dispatch_prompt(input: &str, cwd: &Path) -> ParsedDispatchPrompt {

@@ -396,10 +396,14 @@ Already implemented:
 - Supervisor app-server dispatch now uses a local websocket endpoint by
   default so a hosted helper can reconnect to the same running thread.
 - Patched Codex helper build script produces `target/debug/agentview-codex-hosted`.
+- `agentview doctor` reports Codex CLI, `gh`, Rust, hosted helper resolution,
+  the pinned Codex source ref, and the Codex patch queue count so packaging and
+  update-flow problems are visible without opening the TUI.
 
 Still missing from the normal path:
 
-- Helper packaging/version-update workflow is still manual.
+- Helper packaging/version-update workflow is script-driven but still not a
+  release/package installer.
 - List TUI PTY automation covers enter/detach/re-enter and dirty-worktree
   remove protection. Fake websocket integration covers hosted attach while a
   job is in `needs_input`; deterministic real-Codex PTY coverage for that
