@@ -5,12 +5,12 @@ Date: 2026-05-14
 Observed Codex CLI: `codex-cli 0.130.0`
 Observed Codex source tag: `rust-v0.130.0`
 
-This plan replaces the earlier app-server spike plan for implementation
-decisions. The product goal is not to wrap `codex resume`; it is to make
-AgentView the session controller and reuse Codex source for the native session
-view.
+This plan replaces the earlier app-server spike plan and the earlier V2 attach
+plan for implementation decisions. The product goal is not to wrap
+`codex resume`; it is to make AgentView the session controller and reuse Codex
+source for the native session view.
 
-## Plan V2 Summary
+## Plan V3 Summary: Codex Source Overlay
 
 The current architecture decision is:
 
@@ -18,8 +18,35 @@ The current architecture decision is:
 AgentView owns orchestration.
 Codex app-server owns execution.
 Codex TUI source owns the attached session UI.
-AgentView patch queue exposes the small hosted-session seam between them.
+AgentView patch queue exposes the smallest hosted-session seam between them.
 ```
+
+The key idea is a Codex source overlay:
+
+```text
+AgentView product layer
+  -> AgentView adapter crates
+  -> pinned upstream Codex source + small hosted-mode patches
+  -> Codex app-server protocol and Codex TUI runtime
+```
+
+This explicitly does not mean:
+
+- copying Codex TUI files into `agentview-tui`;
+- making AgentView a long-lived fork of Codex behavior;
+- driving a child `codex resume` process and trying to steal terminal keys;
+- parsing terminal output to infer state when app-server events exist.
+
+It does mean:
+
+- AgentView owns job metadata, grouping, worktrees, supervisor lifetime, and
+  list UI behavior.
+- Codex owns transcript state, thread/turn execution, approvals, command
+  output, diffs, model/provider behavior, and the native conversation UI.
+- The only allowed Codex changes live in `patches/codex` and expose generic
+  hosted-session extension points.
+- General AgentView code talks to adapter crates. It does not import random
+  Codex internals directly.
 
 This is the minimum chain that can match Claude Agent View behavior without
 reimplementing Codex's session UI:
@@ -52,10 +79,81 @@ agentview-tui
 The helper process is an MVP transport detail. The product contract is that
 AgentView never uses `codex resume` for the normal attach path.
 
-## How AgentView Is Layered Over Codex Source
+## Codex Source Overlay Contract
 
-AgentView does not fork Codex into its own implementation. It layers over
-Codex source in four explicit layers:
+AgentView wraps Codex source through a controlled overlay, not through a fork.
+The overlay has five layers:
+
+1. Upstream source pin.
+   `third_party/codex` is a git submodule pinned to a known upstream Codex
+   tag/commit.
+
+2. Upstream protocol path dependencies.
+   AgentView may depend on stable Codex crates from the pinned submodule, but
+   only from bridge crates. The current direct workspace dependency is
+   `codex-app-server-protocol`; future candidates are `codex-app-server-client`
+   and a hosted `codex-tui` library surface once dependency and terminal
+   ownership are clean enough.
+
+3. Patch queue.
+   `patches/codex/*.patch` is the only place where AgentView changes Codex
+   source. Patches must expose host/detach/library seams and must not change
+   Codex model, tool, approval, transcript, or provider semantics.
+
+4. Patched Codex build artifact.
+   `tools/build-codex-hosted-helper.sh` applies the patch queue to a clean
+   target copy, builds Codex's patched `agentview-codex-hosted` helper, and
+   writes the helper next to the AgentView binary for the attach path.
+
+5. AgentView adapter crates.
+   `agentview-codex-app-server`, `agentview-codex-runtime`, and
+   `agentview-codex-hosted` are the boundary where AgentView talks to Codex.
+   `agentview-core`, `agentview-tui`, and `agentview-cli` should stay
+   product-level and provider-agnostic where practical.
+
+Current build-time overlay:
+
+```text
+third_party/codex @ rust-v0.130.0
+  -> patches/codex/*.patch
+  -> target/agentview-codex-patched/codex
+  -> cargo build -p codex-tui --bin agentview-codex-hosted
+  -> target/debug/agentview-codex-hosted
+```
+
+Current run-time overlay:
+
+```text
+agentview
+  -> supervisor starts `codex app-server --listen ws://127.0.0.1:<port>`
+  -> thread/start + turn/start create a Codex-owned thread
+  -> AgentView stores job id <-> Codex thread id <-> worktree metadata
+  -> AgentView renders list state from structured app-server notifications
+
+Enter selected row
+  -> AgentView asks supervisor for the live app-server URL
+  -> AgentView launches sibling `agentview-codex-hosted`
+  -> helper opens the selected thread through patched Codex TUI code
+  -> Left Arrow returns a detached exit status
+  -> AgentView redraws the list while Codex keeps owning the thread
+```
+
+Target run-time overlay:
+
+```text
+agentview-tui
+  -> agentview-codex-hosted
+  -> codex_tui::hosted::run_hosted_session_view(...)
+  -> same supervisor-owned Codex app-server thread
+```
+
+The helper process can disappear only when Codex TUI can be linked directly
+without making terminal ownership brittle. That removal must not change the
+user-visible attach/detach behavior.
+
+## Current Layering Details
+
+The five-layer overlay contract maps to the current repository like this:
 
 1. Upstream source pin.
    `third_party/codex` is a git submodule pinned to a known upstream Codex
@@ -80,7 +178,13 @@ Codex source in four explicit layers:
    with the added `agentview-codex-hosted` binary, then copies the helper to
    `target/debug/agentview-codex-hosted`.
 
-4. AgentView adapter crates.
+4. Codex protocol path dependencies.
+   The AgentView workspace currently imports `codex-app-server-protocol` from
+   the pinned submodule. This gives adapter tests and request/response payloads
+   the same Rust types Codex uses, without pulling Codex TUI into the main
+   AgentView workspace yet.
+
+5. AgentView adapter crates.
    Only adapter crates may know about Codex internals:
 
    - `agentview-codex-app-server`: current JSON-RPC/app-server transport.
@@ -91,10 +195,10 @@ Codex source in four explicit layers:
    adapters. They must not import random Codex internals directly.
 
 In other words, AgentView "sits on top of" Codex by pinning upstream source,
-rebasing a tiny hosted-mode patch queue, and calling that hosted seam through
-adapter crates. AgentView owns session list/product behavior; Codex owns the
-actual conversation, transcript, command rendering, approvals, diffs, and
-composer.
+rebasing a tiny hosted-mode patch queue, consuming stable protocol types where
+available, and calling that hosted seam through adapter crates. AgentView owns
+session list/product behavior; Codex owns the actual conversation, transcript,
+command rendering, approvals, diffs, and composer.
 
 ## Current MVP Source Chain
 
@@ -498,17 +602,22 @@ third_party/codex -> openai/codex tag rust-v0.130.0
 commit: 58573da43ab697e8b79f152c53df4b42230395a8
 ```
 
-Codex crates we expect to consume by path:
+Codex crates consumed or targeted by path:
 
 ```toml
+# Current direct dependency from the AgentView workspace.
 codex-app-server-protocol = { path = "third_party/codex/codex-rs/app-server-protocol" }
+
+# Target bridge dependencies, only after the adapter boundary is clean.
 codex-app-server-client = { path = "third_party/codex/codex-rs/app-server-client" }
 codex-tui = { path = "third_party/codex/codex-rs/tui" }
 ```
 
-The exact dependency set may grow because `codex-tui` has internal workspace
-dependencies. That is acceptable as long as Codex remains isolated behind
-AgentView adapter crates.
+Today `codex-tui` is not linked into the main AgentView workspace. It is built
+through the patched helper artifact, because direct library hosting still needs
+cleaner terminal ownership and dependency isolation. The exact dependency set
+may grow later because `codex-tui` has internal workspace dependencies. That is
+acceptable as long as Codex remains isolated behind AgentView adapter crates.
 
 AgentView must not import Codex internals directly from general app code.
 Only these bridge crates may touch Codex crates:
@@ -1148,19 +1257,24 @@ Regression tests:
 
 The next implementation work should follow this order:
 
-1. Expand hosted-view and PTY coverage around `needs_input`.
+1. Formalize the paired local install path.
+   - Install `agentview` and `agentview-codex-hosted` into the same bin
+     directory so sibling helper resolution works outside `target/debug`.
+   - Keep `tools/build-dev.sh`, `tools/check-codex-patches.sh`, and
+     `tools/build-codex-hosted-helper.sh` as required development checks.
+   - Keep release packaging separate from this local installer until the helper
+     process is replaced or the release artifact layout is decided.
+2. Expand hosted-view and PTY coverage around `needs_input`.
    - Keep the fake websocket integration for attach while a row is in
      `needs_input`.
    - Add deterministic real-Codex PTY coverage if Codex exposes a stable way to
      force a request-user-input or approval state.
    - Continue verifying that list-level reply can resolve the pending request
      after hosted attach.
-2. Formalize helper packaging and Codex update flow.
-   - Keep `tools/build-dev.sh`, `tools/check-codex-patches.sh`, and
-     `tools/build-codex-hosted-helper.sh` as required development checks.
+3. Tighten the Codex update flow.
    - Use `tools/update-codex.sh <ref>` to bump `third_party/codex` without
      leaving patch changes applied in the submodule.
    - Document the tested Codex CLI/source version after every bump.
-3. Then fill the remaining parity gaps.
+4. Then fill the remaining parity gaps.
    - Keep running and recording the real-Codex PTY E2E after hosted-session
      changes.
