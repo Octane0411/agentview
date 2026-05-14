@@ -54,18 +54,53 @@ Already implemented:
 - Fallback attach through `codex resume`, now guarded for active jobs.
 - `crates/agentview-codex-app-server`, a minimal stdio JSONL app-server client.
 - Hidden smoke command: `agentview __app-server-smoke`.
+- Hidden app-server dispatch path: `agentview run --app-server ...`.
+- `crates/agentview-codex-runtime`, the first supervisor-facing runtime bridge.
+- Codex source submodule pinned to `rust-v0.130.0`.
+- Hosted Codex TUI patch stored under `patches/codex`.
+- `crates/agentview-codex-hosted`, the AgentView-side hosted-session contract
+  and helper invocation shape.
 
 Still missing from the normal path:
 
-- `agentview run` and TUI dispatch do not use app-server yet.
+- Default `agentview run` and TUI dispatch do not use app-server yet.
 - AgentView does not keep a long-lived app-server runtime alive yet.
 - `Enter` still uses fallback attach for completed jobs.
 - No hosted Codex TUI entrypoint is wired into AgentView yet.
 
 ## How AgentView Wraps Codex Source
 
-AgentView stays the top-level product and process boundary. Codex source is
-vendored only to reuse the app-server protocol/client and native TUI rendering.
+AgentView stays the top-level product, process boundary, and user-visible
+controller. Codex source is vendored only to reuse two things:
+
+1. Codex's structured session runtime boundary: app-server protocol, thread
+   lifecycle, turn lifecycle, approvals, and request-user-input events.
+2. Codex's native interactive session UI: transcript cells, composer, diffs,
+   approvals, command output, and key handling.
+
+AgentView must not become a forked Codex CLI. The integration is a shell around
+Codex's supported or minimally patched library seams:
+
+```text
+AgentView CLI/TUI
+  -> agentview-core
+    -> job store, worktrees, grouping, row state
+  -> agentview-codex-runtime
+    -> Codex app-server protocol
+    -> thread/start, thread/resume, turn/start, notifications
+  -> agentview-codex-hosted
+    -> patched codex_tui hosted entrypoint
+    -> native Codex session view for one thread
+```
+
+The job identity is AgentView-owned. The conversation identity is Codex-owned:
+
+```text
+AgentView job id <-> Codex app-server thread id <-> Codex transcript/session
+```
+
+AgentView stores enough metadata to show and reopen the list. It does not copy
+or reinterpret the full Codex transcript.
 
 Repository layout:
 
@@ -76,14 +111,13 @@ agentview/
     agentview-tui/
     agentview-cli/
     agentview-codex-app-server/
-    agentview-codex-runtime/        # planned: supervisor-facing runtime API
-    agentview-codex-hosted/         # planned: thin wrapper over patched Codex TUI
+    agentview-codex-runtime/        # supervisor-facing Codex runtime API
+    agentview-codex-hosted/         # thin wrapper over patched Codex TUI
   third_party/
     codex/                          # git submodule: openai/codex
   patches/
     codex/
       0001-expose-hosted-session-view.patch
-      0002-add-host-detach-event.patch
   tools/
     update-codex.sh
     check-codex-patches.sh
@@ -114,6 +148,28 @@ Only these bridge crates may touch Codex crates:
 - `agentview-codex-runtime`
 - `agentview-codex-hosted`
 - `agentview-codex-app-server` while the bridge is still being migrated
+
+### Source Integration Contract
+
+There are three allowed ways for AgentView to use Codex source:
+
+1. Runtime bridge.
+   `agentview-codex-runtime` owns the app-server client lifecycle exposed to
+   AgentView. Today it can spawn `codex app-server --listen stdio://`; the
+   target shape is to replace hand-written JSON with Codex protocol/client
+   crates where the dependency graph is stable enough.
+2. Hosted TUI bridge.
+   `agentview-codex-hosted` is the only crate allowed to open the native Codex
+   session view. It passes an app-server connection descriptor and a selected
+   thread id into a patched hosted entrypoint in `codex-tui`.
+3. Patch management.
+   Any Codex source change must live as a small patch under `patches/codex`.
+   The patch must expose generic host/detach behavior, not AgentView product
+   logic. `tools/check-codex-patches.sh` must apply the patches cleanly against
+   the pinned submodule.
+
+Everything else in AgentView talks to these bridge crates, not to Codex
+internals.
 
 ## Verified Codex Source Seams
 
@@ -321,7 +377,7 @@ the normal attach experience.
 
 ### Phase 0: Freeze The Contract
 
-Status: current planning step.
+Status: active architecture contract.
 
 Tasks:
 
@@ -510,15 +566,25 @@ Regression tests:
 
 ## Immediate Next Step
 
-Phase 1 is done. The next implementation step is the Phase 4 spike:
+The next implementation work should follow this order.
 
-1. Add a patch file under `patches/codex` that introduces hosted detach support
-   in `codex-tui`.
-2. Add `crates/agentview-codex-hosted` as the only AgentView crate allowed to
-   call the hosted Codex TUI API.
-3. Wire a hidden AgentView command that opens one app-server thread id through
-   hosted Codex TUI.
-4. Prove that Left Arrow returns to AgentView without a `conversation
-   interrupted` marker.
-5. After that works, move dispatch from `codex exec --json` to
-   app-server-backed runtime.
+1. Complete the app-server-backed turn lifecycle in
+   `agentview-codex-runtime`.
+   - Add `thread/resume` plus follow-up `turn/start` for `agentview reply`.
+   - Add interrupt/stop support through app-server once the request shape is
+     confirmed.
+   - Add fake app-server tests that fail if the app-server path shells out to
+     `codex exec` or `codex resume`.
+2. Add the supervisor boundary.
+   - Keep the Codex app-server process alive outside the visible TUI screen.
+   - Persist job id to thread id mappings.
+   - Let the list close/reopen without killing active Codex turns.
+3. Wire hosted attach behind a hidden command first.
+   - Input: AgentView job id or Codex thread id.
+   - Behavior: open the patched Codex hosted session view.
+   - Detach: Left Arrow returns to AgentView without `conversation
+     interrupted`.
+4. Cut over default UX only after the hidden path works.
+   - `agentview run` and TUI submit default to app-server dispatch.
+   - `Enter` defaults to hosted Codex TUI.
+   - `codex exec` and `codex resume` remain explicit fallback/debug paths only.
