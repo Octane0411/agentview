@@ -65,6 +65,7 @@ agentview doctor
 - `Ctrl+R`: rename selected session
 - `Ctrl+T`: pin/unpin
 - `Ctrl+S`: switch grouping between state and directory; the choice persists
+- `Ctrl+C`: clear input or panels; press twice to exit
 - `?`: help
 - `Esc`: close panels, cancel rename, clear input, or exit
 

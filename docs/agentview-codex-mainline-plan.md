@@ -251,6 +251,8 @@ Current checkpoint:
   group and persists the order in `Job.manualOrder`.
 - `Ctrl+R` starts inline rename mode for the selected session; `Enter` saves
   the AgentView-owned title and `Esc` cancels without touching Codex state.
+- `Ctrl+C` now matches the spec: it clears input/panels first and exits only on
+  a second press.
 - `agentview respawn --all` restarts every visible stopped session through the
   existing `respawn_job` path; app-server jobs therefore resume through the
   supervisor/app-server backend, not `codex resume`.

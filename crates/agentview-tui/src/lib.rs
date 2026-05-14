@@ -98,6 +98,7 @@ struct App {
     group_by: GroupBy,
     collapsed_groups: HashSet<String>,
     last_delete: Option<LastDelete>,
+    last_ctrl_c: Option<Instant>,
     last_refresh: Instant,
 }
 
@@ -115,6 +116,7 @@ impl Default for App {
             group_by: GroupBy::State,
             collapsed_groups: HashSet::new(),
             last_delete: None,
+            last_ctrl_c: None,
             last_refresh: Instant::now(),
         }
     }
@@ -299,7 +301,11 @@ impl App {
                 code: KeyCode::Char('c'),
                 modifiers,
                 ..
-            } if modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.handle_ctrl_c() {
+                    return Ok(true);
+                }
+            }
             KeyEvent {
                 code: KeyCode::Esc, ..
             } => {
@@ -615,6 +621,29 @@ impl App {
         self.refresh()
     }
 
+    fn handle_ctrl_c(&mut self) -> bool {
+        if self.help || self.peek || self.renaming.is_some() || !self.input.is_empty() {
+            self.help = false;
+            self.peek = false;
+            self.renaming = None;
+            self.input.clear();
+            self.last_ctrl_c = Some(Instant::now());
+            self.message = "cleared; press Ctrl+C again to exit".to_string();
+            return false;
+        }
+
+        if self
+            .last_ctrl_c
+            .as_ref()
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(2))
+        {
+            return true;
+        }
+        self.last_ctrl_c = Some(Instant::now());
+        self.message = "press Ctrl+C again to exit".to_string();
+        false
+    }
+
     fn toggle_pin(&mut self) -> Result<()> {
         if let Some(job) = self.selected_job() {
             pin_job(&job.id, None)?;
@@ -730,7 +759,7 @@ impl App {
             frame.render_widget(input_widget, chunks[3]);
 
             frame.render_widget(
-                Paragraph::new("enter open/send/fold . space reply . ctrl+r rename . shift+up/down reorder . ctrl+x stop/delete . ctrl+s group . ctrl+t pin . ? help"),
+                Paragraph::new("enter open/send/fold . space reply . ctrl+r rename . ctrl+x stop/delete . ctrl+s group . ctrl+t pin . ctrl+c clear/exit . ? help"),
                 chunks[4],
             );
         })?;
@@ -812,7 +841,7 @@ fn render_help() -> Vec<Line<'static>> {
         "shift+up/down reorder within group . ctrl+x stop, press again to delete",
         "ctrl+r rename . ctrl+t pin . ctrl+s group by state/directory",
         "type a prompt to dispatch . with peek open, typed text replies to selected session",
-        "esc exits, closes panels, cancels rename, or clears input",
+        "ctrl+c clears input/panels; press twice to exit . esc exits or closes panels",
     ]
     .into_iter()
     .map(Line::from)
@@ -1082,6 +1111,33 @@ mod tests {
         assert!(app.renaming.is_none());
         assert_eq!(app.input, "");
         assert_eq!(app.message, "select a session to rename");
+    }
+
+    #[test]
+    fn ctrl_c_clears_active_input_before_exit() {
+        let mut app = App {
+            input: "draft prompt".to_string(),
+            peek: true,
+            help: true,
+            renaming: Some("first".to_string()),
+            ..Default::default()
+        };
+
+        assert!(!app.handle_ctrl_c());
+        assert!(app.input.is_empty());
+        assert!(!app.peek);
+        assert!(!app.help);
+        assert!(app.renaming.is_none());
+        assert_eq!(app.message, "cleared; press Ctrl+C again to exit");
+    }
+
+    #[test]
+    fn ctrl_c_requires_second_press_to_exit() {
+        let mut app = App::default();
+
+        assert!(!app.handle_ctrl_c());
+        assert_eq!(app.message, "press Ctrl+C again to exit");
+        assert!(app.handle_ctrl_c());
     }
 
     fn job(id: &str, status: JobStatus, pinned: bool, pr: bool) -> Job {
