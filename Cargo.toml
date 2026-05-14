@@ -8,6 +8,7 @@ members = [
   "crates/agentview-tui",
 ]
 resolver = "2"
+exclude = ["third_party/codex"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,6 +25,7 @@ agentview-tui = { path = "crates/agentview-tui" }
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
+codex-app-server-protocol = { path = "third_party/codex/codex-rs/app-server-protocol" }
 crossterm = "0.29"
 libc = "0.2"
 ratatui = "0.29"

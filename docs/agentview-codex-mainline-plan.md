@@ -217,6 +217,18 @@ Acceptance:
 - Updating Codex source breaks adapter tests before it can break AgentView UI
   behavior silently.
 
+Current checkpoint:
+
+- The AgentView workspace excludes `third_party/codex` so Codex's nested Rust
+  workspace can be consumed as pinned path dependencies without inheriting
+  AgentView workspace metadata.
+- `agentview-codex-runtime` now depends on `codex-app-server-protocol` and uses
+  upstream protocol response types for request-user-input, v2 command/file
+  approval, v2 permission approval, and v1 approval response payloads.
+- `agentview-core` delegates pending Codex server-request response construction
+  to `agentview-codex-runtime` instead of hand-assembling those protocol
+  payloads directly.
+
 ### Milestone 4: Close Claude Agent View Parity Gaps
 
 Goal: match `docs/codex-agent-view-spec.md` for the Codex-only MVP.
@@ -844,6 +856,11 @@ Current checkpoint:
 
 - `agentview run` creates an app-server-backed job through supervisor
   `thread/start` and `turn/start` instead of `codex exec`.
+- `agentview-codex-runtime` owns Codex server-request response construction for
+  request-user-input, v2 command/file approvals, v2 permission approvals, and
+  v1 approval requests. Those payloads now serialize through
+  `codex-app-server-protocol` types instead of being hand-assembled in
+  `agentview-core`.
 - `crates/agentview-codex-runtime` owns app-server process startup,
   `thread/start`, `thread/resume`, `turn/start`, and runtime event delivery.
 - `crates/agentview-codex-runtime` now exposes an incremental

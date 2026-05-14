@@ -2,8 +2,16 @@ use agentview_codex_app_server::{
     AppServerClient, AppServerEvent, ThreadResumeOptions, ThreadStartOptions,
 };
 pub use agentview_codex_app_server::{Notification, ServerRequest};
-use anyhow::Result;
-use serde_json::Value;
+use anyhow::{Context, Result, bail};
+use codex_app_server_protocol::{
+    ApplyPatchApprovalResponse, CommandExecutionApprovalDecision,
+    CommandExecutionRequestApprovalResponse, ExecCommandApprovalResponse,
+    FileChangeApprovalDecision, FileChangeRequestApprovalResponse, GrantedPermissionProfile,
+    PermissionGrantScope, PermissionsRequestApprovalResponse, ToolRequestUserInputAnswer,
+    ToolRequestUserInputParams, ToolRequestUserInputResponse,
+};
+use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -54,6 +62,143 @@ pub struct CodexRuntimeSession {
     client: AppServerClient,
     poll_interval: Duration,
     initialized: RuntimeInitialized,
+}
+
+pub fn server_request_response(method: &str, params: &Value, prompt: &str) -> Result<Value> {
+    match method {
+        "item/tool/requestUserInput" => user_input_response(params, prompt),
+        "item/commandExecution/requestApproval" => {
+            let response = CommandExecutionRequestApprovalResponse {
+                decision: v2_command_approval_decision(prompt)?,
+            };
+            serde_json::to_value(response).context("failed to serialize command approval response")
+        }
+        "item/fileChange/requestApproval" => {
+            let response = FileChangeRequestApprovalResponse {
+                decision: v2_file_change_approval_decision(prompt)?,
+            };
+            serde_json::to_value(response)
+                .context("failed to serialize file-change approval response")
+        }
+        "item/permissions/requestApproval" => permissions_response(params, prompt),
+        "applyPatchApproval" => v1_apply_patch_response(prompt),
+        "execCommandApproval" => v1_exec_command_response(prompt),
+        _ => bail!(
+            "Pending Codex request `{method}` is not supported from the AgentView list yet. Enter the session to answer it."
+        ),
+    }
+}
+
+fn user_input_response(params: &Value, prompt: &str) -> Result<Value> {
+    let answer = prompt.trim();
+    if answer.is_empty() {
+        bail!("Reply is empty");
+    }
+    let params: ToolRequestUserInputParams = serde_json::from_value(params.clone())
+        .context("failed to parse request-user-input params")?;
+    if params.questions.is_empty() {
+        bail!("request-user-input has no questions");
+    }
+    let answers = params
+        .questions
+        .into_iter()
+        .map(|question| {
+            (
+                question.id,
+                ToolRequestUserInputAnswer {
+                    answers: vec![answer.to_string()],
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let response = ToolRequestUserInputResponse { answers };
+    serde_json::to_value(response).context("failed to serialize request-user-input response")
+}
+
+fn permissions_response(params: &Value, prompt: &str) -> Result<Value> {
+    let permissions = if is_approve_text(prompt) {
+        serde_json::from_value(
+            params
+                .get("permissions")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        )
+        .context("failed to parse permissions request profile")?
+    } else if is_decline_text(prompt) {
+        GrantedPermissionProfile::default()
+    } else {
+        bail!(
+            "Permission requests require `agentview approve <job_id>` or `agentview decline <job_id>`"
+        );
+    };
+    let response = PermissionsRequestApprovalResponse {
+        permissions,
+        scope: PermissionGrantScope::Turn,
+        strict_auto_review: None,
+    };
+    serde_json::to_value(response).context("failed to serialize permissions approval response")
+}
+
+fn v2_command_approval_decision(prompt: &str) -> Result<CommandExecutionApprovalDecision> {
+    if is_approve_text(prompt) {
+        return Ok(CommandExecutionApprovalDecision::Accept);
+    }
+    if is_decline_text(prompt) {
+        return Ok(CommandExecutionApprovalDecision::Decline);
+    }
+    bail!("Approval requests require `agentview approve <job_id>` or `agentview decline <job_id>`")
+}
+
+fn v2_file_change_approval_decision(prompt: &str) -> Result<FileChangeApprovalDecision> {
+    if is_approve_text(prompt) {
+        return Ok(FileChangeApprovalDecision::Accept);
+    }
+    if is_decline_text(prompt) {
+        return Ok(FileChangeApprovalDecision::Decline);
+    }
+    bail!("Approval requests require `agentview approve <job_id>` or `agentview decline <job_id>`")
+}
+
+fn v1_apply_patch_response(prompt: &str) -> Result<Value> {
+    let response: ApplyPatchApprovalResponse =
+        serde_json::from_value(json!({ "decision": v1_review_decision(prompt)? }))
+            .context("failed to build v1 apply-patch approval response")?;
+    serde_json::to_value(response).context("failed to serialize v1 apply-patch approval response")
+}
+
+fn v1_exec_command_response(prompt: &str) -> Result<Value> {
+    let response: ExecCommandApprovalResponse =
+        serde_json::from_value(json!({ "decision": v1_review_decision(prompt)? }))
+            .context("failed to build v1 exec-command approval response")?;
+    serde_json::to_value(response).context("failed to serialize v1 exec-command approval response")
+}
+
+fn v1_review_decision(prompt: &str) -> Result<&'static str> {
+    if is_approve_text(prompt) {
+        return Ok("approved");
+    }
+    if is_decline_text(prompt) {
+        return Ok("denied");
+    }
+    bail!("Approval requests require `agentview approve <job_id>` or `agentview decline <job_id>`")
+}
+
+fn is_approve_text(prompt: &str) -> bool {
+    matches!(
+        normalize_decision_text(prompt).as_str(),
+        "approve" | "approved" | "accept" | "accepted" | "yes" | "y"
+    )
+}
+
+fn is_decline_text(prompt: &str) -> bool {
+    matches!(
+        normalize_decision_text(prompt).as_str(),
+        "decline" | "declined" | "deny" | "denied" | "reject" | "rejected" | "no" | "n"
+    )
+}
+
+fn normalize_decision_text(prompt: &str) -> String {
+    prompt.trim().to_ascii_lowercase()
 }
 
 impl Default for CodexRuntime {
@@ -252,6 +397,7 @@ impl CodexRuntimeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
@@ -334,6 +480,87 @@ mod tests {
             RuntimeEvent::TurnStarted { ref thread_id, ref turn_id }
                 if thread_id == "thread-1" && turn_id == "turn-1"
         ));
+    }
+
+    #[test]
+    fn request_user_input_response_answers_each_question_with_protocol_shape() {
+        let response = server_request_response(
+            "item/tool/requestUserInput",
+            &json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "questions": [
+                    { "id": "confirm_path", "header": "Confirm", "question": "Use this path?" },
+                    { "id": "reason", "header": "Reason", "question": "Why?" }
+                ]
+            }),
+            "yes",
+        )
+        .unwrap();
+
+        assert_eq!(
+            response,
+            json!({
+                "answers": {
+                    "confirm_path": { "answers": ["yes"] },
+                    "reason": { "answers": ["yes"] }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn approval_responses_serialize_through_codex_protocol_types() {
+        assert_eq!(
+            server_request_response(
+                "item/commandExecution/requestApproval",
+                &json!({}),
+                "approved"
+            )
+            .unwrap(),
+            json!({ "decision": "accept" })
+        );
+        assert_eq!(
+            server_request_response("item/fileChange/requestApproval", &json!({}), "declined")
+                .unwrap(),
+            json!({ "decision": "decline" })
+        );
+        assert_eq!(
+            server_request_response("execCommandApproval", &json!({}), "approved").unwrap(),
+            json!({ "decision": "approved" })
+        );
+        assert_eq!(
+            server_request_response("applyPatchApproval", &json!({}), "declined").unwrap(),
+            json!({ "decision": "denied" })
+        );
+    }
+
+    #[test]
+    fn permissions_response_grants_or_denies_requested_profile_with_protocol_shape() {
+        let params = json!({
+            "permissions": {
+                "network": { "enabled": true },
+                "fileSystem": { "read": ["/tmp/read"], "write": ["/tmp/write"] }
+            }
+        });
+
+        assert_eq!(
+            server_request_response("item/permissions/requestApproval", &params, "approve")
+                .unwrap(),
+            json!({
+                "permissions": {
+                    "network": { "enabled": true },
+                    "fileSystem": { "read": ["/tmp/read"], "write": ["/tmp/write"] }
+                },
+                "scope": "turn"
+            })
+        );
+        assert_eq!(
+            server_request_response("item/permissions/requestApproval", &params, "decline")
+                .unwrap(),
+            json!({ "permissions": {}, "scope": "turn" })
+        );
     }
 
     fn fake_codex(temp: &TempDir) -> PathBuf {

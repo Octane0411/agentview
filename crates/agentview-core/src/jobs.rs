@@ -12,6 +12,7 @@ use crate::util::{
 };
 use crate::worktree::{create_worktree, remove_worktree, worktree_has_changes};
 use agentview_codex_hosted::HostedHelper;
+use agentview_codex_runtime::server_request_response;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -229,108 +230,6 @@ fn reply_to_running_app_server_job(job: &Job, prompt: &str) -> Result<Option<u32
         Ok(())
     })?;
     Ok(None)
-}
-
-fn server_request_response(method: &str, params: &Value, prompt: &str) -> Result<Value> {
-    match method {
-        "item/tool/requestUserInput" => user_input_response(params, prompt),
-        "item/commandExecution/requestApproval" => {
-            Ok(json!({ "decision": v2_approval_decision(prompt)? }))
-        }
-        "item/fileChange/requestApproval" => {
-            Ok(json!({ "decision": v2_approval_decision(prompt)? }))
-        }
-        "item/permissions/requestApproval" => permissions_response(params, prompt),
-        "applyPatchApproval" | "execCommandApproval" => {
-            Ok(json!({ "decision": v1_review_decision(prompt)? }))
-        }
-        _ => bail!(
-            "Pending Codex request `{method}` is not supported from the AgentView list yet. Enter the session to answer it."
-        ),
-    }
-}
-
-fn user_input_response(params: &Value, prompt: &str) -> Result<Value> {
-    let answer = prompt.trim();
-    if answer.is_empty() {
-        bail!("Reply is empty");
-    }
-    let questions = params
-        .get("questions")
-        .and_then(Value::as_array)
-        .context("request-user-input params are missing questions")?;
-    if questions.is_empty() {
-        bail!("request-user-input has no questions");
-    }
-    let mut answers = serde_json::Map::new();
-    for question in questions {
-        let id = question
-            .get("id")
-            .and_then(Value::as_str)
-            .context("request-user-input question is missing id")?;
-        answers.insert(id.to_string(), json!({ "answers": [answer] }));
-    }
-    Ok(json!({ "answers": answers }))
-}
-
-fn permissions_response(params: &Value, prompt: &str) -> Result<Value> {
-    if is_approve_text(prompt) {
-        let permissions = params
-            .get("permissions")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        return Ok(json!({
-            "permissions": permissions,
-            "scope": "turn",
-        }));
-    }
-    if is_decline_text(prompt) {
-        return Ok(json!({
-            "permissions": {},
-            "scope": "turn",
-        }));
-    }
-    bail!(
-        "Permission requests require `agentview approve <job_id>` or `agentview decline <job_id>`"
-    )
-}
-
-fn v2_approval_decision(prompt: &str) -> Result<&'static str> {
-    if is_approve_text(prompt) {
-        return Ok("accept");
-    }
-    if is_decline_text(prompt) {
-        return Ok("decline");
-    }
-    bail!("Approval requests require `agentview approve <job_id>` or `agentview decline <job_id>`")
-}
-
-fn v1_review_decision(prompt: &str) -> Result<&'static str> {
-    if is_approve_text(prompt) {
-        return Ok("approved");
-    }
-    if is_decline_text(prompt) {
-        return Ok("denied");
-    }
-    bail!("Approval requests require `agentview approve <job_id>` or `agentview decline <job_id>`")
-}
-
-fn is_approve_text(prompt: &str) -> bool {
-    matches!(
-        normalize_decision_text(prompt).as_str(),
-        "approve" | "approved" | "accept" | "accepted" | "yes" | "y"
-    )
-}
-
-fn is_decline_text(prompt: &str) -> bool {
-    matches!(
-        normalize_decision_text(prompt).as_str(),
-        "decline" | "declined" | "deny" | "denied" | "reject" | "rejected" | "no" | "n"
-    )
-}
-
-fn normalize_decision_text(prompt: &str) -> String {
-    prompt.trim().to_ascii_lowercase()
 }
 
 pub fn respawn_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
@@ -667,84 +566,6 @@ mod tests {
         assert_eq!(
             DispatchOptions::default().backend,
             DispatchBackend::AppServer
-        );
-    }
-
-    #[test]
-    fn request_user_input_response_answers_each_question() {
-        let response = server_request_response(
-            "item/tool/requestUserInput",
-            &json!({
-                "questions": [
-                    { "id": "confirm_path", "header": "Confirm", "question": "Use this path?" },
-                    { "id": "reason", "header": "Reason", "question": "Why?" }
-                ]
-            }),
-            "yes",
-        )
-        .unwrap();
-
-        assert_eq!(
-            response,
-            json!({
-                "answers": {
-                    "confirm_path": { "answers": ["yes"] },
-                    "reason": { "answers": ["yes"] }
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn approval_responses_use_codex_protocol_decisions() {
-        assert_eq!(
-            server_request_response(
-                "item/commandExecution/requestApproval",
-                &json!({}),
-                "approved"
-            )
-            .unwrap(),
-            json!({ "decision": "accept" })
-        );
-        assert_eq!(
-            server_request_response("item/fileChange/requestApproval", &json!({}), "declined")
-                .unwrap(),
-            json!({ "decision": "decline" })
-        );
-        assert_eq!(
-            server_request_response("execCommandApproval", &json!({}), "approved").unwrap(),
-            json!({ "decision": "approved" })
-        );
-        assert_eq!(
-            server_request_response("applyPatchApproval", &json!({}), "declined").unwrap(),
-            json!({ "decision": "denied" })
-        );
-    }
-
-    #[test]
-    fn permissions_response_grants_or_denies_requested_profile() {
-        let params = json!({
-            "permissions": {
-                "network": { "enabled": true },
-                "fileSystem": { "read": ["/tmp/read"], "write": ["/tmp/write"] }
-            }
-        });
-
-        assert_eq!(
-            server_request_response("item/permissions/requestApproval", &params, "approve")
-                .unwrap(),
-            json!({
-                "permissions": {
-                    "network": { "enabled": true },
-                    "fileSystem": { "read": ["/tmp/read"], "write": ["/tmp/write"] }
-                },
-                "scope": "turn"
-            })
-        );
-        assert_eq!(
-            server_request_response("item/permissions/requestApproval", &params, "decline")
-                .unwrap(),
-            json!({ "permissions": {}, "scope": "turn" })
         );
     }
 }
