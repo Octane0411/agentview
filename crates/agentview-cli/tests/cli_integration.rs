@@ -127,6 +127,9 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         stdout.contains(&job_id) && stdout.contains("completed")
     });
+    let list = env.agentview(&store, &codex).arg("list").output().unwrap();
+    assert!(list.status.success());
+    assert!(String::from_utf8_lossy(&list.stdout).contains("pr:unknown"));
 
     let peek = env
         .agentview(&store, &codex)
@@ -137,6 +140,7 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
     let peek_stdout = String::from_utf8_lossy(&peek.stdout);
     assert!(peek_stdout.contains(THREAD_ID));
     assert!(peek_stdout.contains("completed fake app-server"));
+    assert!(peek_stdout.contains("https://github.com/acme/app/pull/42 [unknown]"));
 
     let logs = env
         .agentview(&store, &codex)
@@ -184,6 +188,11 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
         serde_json::from_str(&fs::read_to_string(store.path().join("agentview.json")).unwrap())
             .unwrap();
     assert_eq!(store_json["jobs"][&job_id]["backend"], "app_server");
+    assert_eq!(store_json["jobs"][&job_id]["prRefs"][0]["number"], 42);
+    assert_eq!(
+        store_json["jobs"][&job_id]["prRefs"][0]["status"],
+        "unknown"
+    );
     let worktree_path = store_json["jobs"][&job_id]["worktreePath"]
         .as_str()
         .expect("worktree path");
@@ -254,11 +263,14 @@ fn respawn_all_restarts_stopped_app_server_jobs() {
     }
 
     wait_until(Duration::from_secs(5), || {
-        let output = env.agentview(&store, &codex).arg("list").output().unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        [&first, &second]
-            .iter()
-            .all(|job_id| stdout.contains(*job_id) && stdout.contains("stopped"))
+        [&first, &second].iter().all(|job_id| {
+            let output = env
+                .agentview(&store, &codex)
+                .args(["peek", job_id])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout).contains(&format!("{job_id}  stopped"))
+        })
     });
 
     let respawn = env
@@ -353,6 +365,17 @@ fn app_server_stop_routes_turn_interrupt_through_supervisor() {
         let output = env.agentview(&store, &codex).arg("list").output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         stdout.contains(&job_id) && stdout.contains("stopped")
+    });
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env
+            .agentview(&store, &codex)
+            .args(["logs", &job_id])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains("supervisor_app_server_turn_interrupt_requested")
+            && stdout.contains("supervisor_app_server_turn_interrupt_sent")
     });
 
     let logs = env
@@ -859,7 +882,7 @@ if [ "${{1:-}}" = "app-server" ]; then
 
   IFS= read -r thread_request
   case "$thread_request" in
-    *'"method":"thread/start"'*) thread_mode="start"; delta="completed fake app-server" ;;
+    *'"method":"thread/start"'*) thread_mode="start"; delta="completed fake app-server https://github.com/acme/app/pull/42" ;;
     *'"method":"thread/resume"'*) thread_mode="resume"; delta="completed fake app-server reply" ;;
     *) printf '%s\n' "expected thread/start or thread/resume, got: $thread_request" >&2; exit 5 ;;
   esac

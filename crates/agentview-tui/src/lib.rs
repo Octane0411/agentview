@@ -7,7 +7,7 @@ use agentview_core::schema::{Job, JobStatus};
 use agentview_core::store::{
     append_job_event, get_preference, list_jobs, read_job_last, set_preference,
 };
-use agentview_core::util::{now_iso, relative_time, truncate};
+use agentview_core::util::{format_pr_refs, now_iso, pr_status_indicator, relative_time, truncate};
 use anyhow::{Result, bail};
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -844,12 +844,14 @@ fn render_job_spans(job: &Job) -> Vec<Span<'static>> {
             .map(|request| request.message.as_str())
             .or(job.last_summary.as_deref())
             .unwrap_or(""),
-        88,
+        70,
     );
+    let pr = pr_status_indicator(&job.pr_refs).unwrap_or_default();
     vec![
         Span::raw(format!("{icon} ")),
         Span::raw(format!("{title:<34}")),
-        Span::raw(format!(" {summary:<74}")),
+        Span::raw(format!(" {summary:<62}")),
+        Span::raw(format!(" {pr:<14}")),
         Span::raw(format!(" {}", relative_time(&job.updated_at))),
     ]
 }
@@ -879,14 +881,7 @@ fn render_peek(job: Option<&Job>) -> Result<Vec<Line<'static>>> {
         )));
     }
     if !job.pr_refs.is_empty() {
-        lines.push(Line::from(format!(
-            "prs: {}",
-            job.pr_refs
-                .iter()
-                .map(|pr| pr.url.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
+        lines.push(Line::from(format!("prs: {}", format_pr_refs(&job.pr_refs))));
     }
     lines.push(Line::from(truncate(
         if !last.trim().is_empty() {

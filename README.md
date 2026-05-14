@@ -89,8 +89,8 @@ preferences.
   `patches/codex`.
 - Direct library-hosted Codex TUI is still the target shape.
 - The fallback `codex exec` backend cannot receive live replies while running.
-- PR status extraction and final Claude Agent View grouping parity are not
-  complete yet.
+- PR URL detection is wired into app-server output, but external PR status
+  resolution from checks/reviews is not complete yet.
 
 ## Development
 

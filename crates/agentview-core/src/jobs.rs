@@ -353,11 +353,17 @@ pub fn stop_job(job_id: &str) -> Result<()> {
     let job = require_job(job_id)?;
     if job.backend == JobBackend::AppServer && job.process_state == ProcessState::Alive {
         supervisor_stop_app_server_turn(job_id)?;
+        mark_job_stopped(job_id)?;
         return Ok(());
     }
     if let Some(pid) = job.pid {
         signal_term(pid);
     }
+    mark_job_stopped(job_id)?;
+    Ok(())
+}
+
+fn mark_job_stopped(job_id: &str) -> Result<Job> {
     update_job(job_id, |job| {
         job.status = JobStatus::Stopped;
         job.process_state = ProcessState::Exited;
@@ -367,8 +373,7 @@ pub fn stop_job(job_id: &str) -> Result<()> {
         job.completed_at = Some(now_iso());
         job.last_summary = Some("stopped".to_string());
         Ok(())
-    })?;
-    Ok(())
+    })
 }
 
 pub fn remove_job(job_id: &str, options: RemoveOptions) -> Result<()> {

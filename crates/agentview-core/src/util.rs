@@ -195,10 +195,42 @@ pub fn extract_pr_refs(text: &str) -> Vec<PrRef> {
 
 pub fn merge_pr_refs(existing: &[PrRef], next: &[PrRef]) -> Vec<PrRef> {
     let mut by_url = std::collections::BTreeMap::new();
-    for item in existing.iter().chain(next.iter()) {
+    for item in existing {
         by_url.insert(item.url.clone(), item.clone());
     }
+    for item in next {
+        let should_keep_existing = by_url
+            .get(&item.url)
+            .is_some_and(|existing| existing.status != "unknown" && item.status == "unknown");
+        if !should_keep_existing {
+            by_url.insert(item.url.clone(), item.clone());
+        }
+    }
     by_url.into_values().collect()
+}
+
+pub fn format_pr_refs(refs: &[PrRef]) -> String {
+    refs.iter()
+        .map(|pr| format!("{} [{}]", pr.url, pr.status))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+pub fn pr_status_indicator(refs: &[PrRef]) -> Option<String> {
+    if refs.is_empty() {
+        return None;
+    }
+    let status = refs
+        .iter()
+        .map(|pr| pr.status.as_str())
+        .find(|status| !status.trim().is_empty() && *status != "unknown")
+        .unwrap_or("unknown");
+    let prefix = if refs.len() == 1 {
+        "pr".to_string()
+    } else {
+        format!("{}prs", refs.len())
+    };
+    Some(format!("{prefix}:{status}"))
 }
 
 pub fn extract_thread_id(event: &Value) -> Option<String> {
@@ -343,6 +375,27 @@ mod tests {
             summarize_event(&event).as_deref(),
             Some("Opened https://github.com/acme/app/pull/42")
         );
+    }
+
+    #[test]
+    fn pr_helpers_preserve_known_status_and_format_indicator() {
+        let existing = vec![PrRef {
+            url: "https://github.com/acme/app/pull/42".to_string(),
+            owner: "acme".to_string(),
+            repo: "app".to_string(),
+            number: 42,
+            status: "green".to_string(),
+        }];
+        let unknown = extract_pr_refs("see https://github.com/acme/app/pull/42");
+
+        let merged = merge_pr_refs(&existing, &unknown);
+
+        assert_eq!(merged[0].status, "green");
+        assert_eq!(
+            format_pr_refs(&merged),
+            "https://github.com/acme/app/pull/42 [green]"
+        );
+        assert_eq!(pr_status_indicator(&merged).as_deref(), Some("pr:green"));
     }
 
     #[test]

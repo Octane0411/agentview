@@ -7,7 +7,7 @@ use agentview_core::jobs::{
 use agentview_core::schema::{Job, JobStatus};
 use agentview_core::store::{list_jobs, read_job_last, require_job, tail_job_events};
 use agentview_core::supervisor::{run_supervisor, supervisor_ping, supervisor_shutdown};
-use agentview_core::util::{relative_time, truncate};
+use agentview_core::util::{format_pr_refs, pr_status_indicator, relative_time, truncate};
 use agentview_core::worker::worker_main;
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
@@ -273,14 +273,7 @@ fn cmd_peek(job_id: &str) -> Result<()> {
         println!("needs input: {}", blocking_request.message);
     }
     if !job.pr_refs.is_empty() {
-        println!(
-            "prs: {}",
-            job.pr_refs
-                .iter()
-                .map(|pr| pr.url.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        println!("prs: {}", format_pr_refs(&job.pr_refs));
     }
     println!();
     println!(
@@ -465,11 +458,12 @@ fn format_job_line(job: &Job) -> String {
             .map(|request| request.message.as_str())
             .or(job.last_summary.as_deref())
             .unwrap_or(""),
-        72,
+        60,
     );
+    let pr = pr_status_indicator(&job.pr_refs).unwrap_or_default();
     format!(
-        "{icon} {:<16} {:<12} {:<30} {:<74} {time}",
-        job.id, job.status, title, summary
+        "{icon} {:<16} {:<12} {:<30} {:<62} {:<14} {time}",
+        job.id, job.status, title, summary, pr
     )
 }
 

@@ -403,9 +403,11 @@ fn handle_app_server_notification(
             {
                 latest_text.push_str(delta);
                 let summary = truncate(latest_text.trim(), 200);
+                let refs = extract_pr_refs(latest_text);
                 update_job(job_id, |job| {
                     job.last_output = Some(summary.clone());
                     job.last_summary = Some(truncate(&summary, 120));
+                    job.pr_refs = merge_pr_refs(&job.pr_refs, &refs);
                     Ok(())
                 })?;
                 write_job_last(job_id, latest_text.trim())?;
@@ -420,7 +422,8 @@ fn handle_app_server_notification(
             let interrupted = matches!(status, "interrupted");
             let failed = matches!(status, "failed" | "error" | "cancelled" | "canceled");
             update_job(job_id, |job| {
-                job.status = if interrupted {
+                let already_stopped = job.status == JobStatus::Stopped;
+                job.status = if already_stopped || interrupted {
                     JobStatus::Stopped
                 } else if failed {
                     JobStatus::Failed
@@ -431,17 +434,23 @@ fn handle_app_server_notification(
                 job.pid = None;
                 job.active_worker_pid = None;
                 job.codex_turn_id = None;
-                job.exit_code = Some(if failed || interrupted { 1 } else { 0 });
+                job.exit_code = Some(if failed || interrupted || already_stopped {
+                    1
+                } else {
+                    0
+                });
                 job.completed_at = Some(now_iso());
                 job.blocking_request = None;
                 job.last_summary = Some(if latest_text.trim().is_empty() {
-                    if interrupted {
+                    if already_stopped || interrupted {
                         "stopped".to_string()
                     } else if failed {
                         format!("failed: {status}")
                     } else {
                         "completed".to_string()
                     }
+                } else if already_stopped {
+                    "stopped".to_string()
                 } else {
                     truncate(latest_text.trim(), 120)
                 });

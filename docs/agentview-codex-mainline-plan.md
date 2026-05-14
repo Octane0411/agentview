@@ -259,6 +259,10 @@ Current checkpoint:
 - `agentview respawn --all` restarts every visible stopped session through the
   existing `respawn_job` path; app-server jobs therefore resume through the
   supervisor/app-server backend, not `codex resume`.
+- App-server assistant output now feeds GitHub PR URLs into `Job.prRefs`, list
+  rows show a compact PR status indicator, and peek output prints each PR with
+  its currently known status. Unknown status is preserved as `unknown` until a
+  resolver can prove checks/review/merge state.
 
 Acceptance:
 
@@ -1100,5 +1104,5 @@ The next implementation work should follow this order:
      leaving patch changes applied in the submodule.
    - Document the tested Codex CLI/source version after every bump.
 3. Then fill the remaining parity gaps.
-   - PR status extraction.
+   - External PR status resolution through GitHub or `gh`.
    - Broader dirty-worktree removal coverage in real-Codex PTY E2E.
