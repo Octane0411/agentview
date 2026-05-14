@@ -11,6 +11,8 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
@@ -77,6 +79,10 @@ pub fn supervisor_pid_path() -> PathBuf {
     agentview_home().join("supervisor.pid")
 }
 
+pub fn supervisor_log_path() -> PathBuf {
+    agentview_home().join("supervisor.log")
+}
+
 #[cfg(unix)]
 pub fn run_supervisor(once: bool) -> Result<()> {
     use std::os::unix::net::{UnixListener, UnixStream};
@@ -105,8 +111,17 @@ pub fn run_supervisor(once: bool) -> Result<()> {
     }
 
     for stream in listener.incoming() {
-        if handle_stream(stream?, &state)? == SupervisorAction::Shutdown {
-            break;
+        match stream {
+            Ok(stream) => match handle_stream(stream, &state) {
+                Ok(SupervisorAction::Continue) => {}
+                Ok(SupervisorAction::Shutdown) => break,
+                Err(error) => {
+                    append_supervisor_log(format!("ipc error: {error:#}"));
+                }
+            },
+            Err(error) => {
+                append_supervisor_log(format!("listener error: {error:#}"));
+            }
         }
     }
     Ok(())
@@ -171,12 +186,28 @@ fn ensure_supervisor() -> Result<u32> {
         return Ok(read_supervisor_pid().unwrap_or(0));
     }
 
+    fs::create_dir_all(agentview_home())?;
     let mut child = Command::new(supervisor_binary()?);
+    let stderr = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(supervisor_log_path())
+        .context("failed to open AgentView supervisor log")?;
     child
         .arg("__supervisor")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::from(stderr));
+    // Detach the background supervisor from the caller's terminal/session so
+    // closing an AgentView command or PTY does not take active Codex turns down.
+    unsafe {
+        child.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let pid = child
         .spawn()
         .context("failed to spawn AgentView supervisor")?
@@ -583,6 +614,7 @@ fn run_app_server_turn(
 }
 
 fn record_turn_error(job_id: &str, message: String) {
+    append_supervisor_log(format!("job {job_id} failed: {message}"));
     let _ = append_job_event(
         job_id,
         &serde_json::json!({
@@ -610,5 +642,16 @@ impl Drop for SupervisorFiles {
     fn drop(&mut self) {
         let _ = fs::remove_file(supervisor_socket_path());
         let _ = fs::remove_file(supervisor_pid_path());
+    }
+}
+
+fn append_supervisor_log(message: String) {
+    let _ = fs::create_dir_all(agentview_home());
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(supervisor_log_path())
+    {
+        let _ = writeln!(file, "{} {message}", now_iso());
     }
 }

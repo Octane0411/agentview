@@ -12,11 +12,12 @@ new file mode 100644
 index 0000000000..7c0f864e77
 --- /dev/null
 +++ b/codex-rs/tui/src/bin/agentview-codex-hosted.rs
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,79 @@
 +use std::path::PathBuf;
 +
 +use clap::Parser;
 +use codex_arg0::Arg0DispatchPaths;
++use codex_arg0::arg0_dispatch_or_else;
 +use codex_config::LoaderOverrides;
 +use codex_tui::hosted::HostedSessionConfig;
 +use codex_tui::hosted::HostedSessionExit;
@@ -49,11 +50,12 @@ index 0000000000..7c0f864e77
 +}
 +
 +fn main() -> anyhow::Result<()> {
++    arg0_dispatch_or_else(|arg0_paths| async move { run(arg0_paths).await })
++}
++
++async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
 +    let args = Args::parse();
-+    let runtime = tokio::runtime::Builder::new_multi_thread()
-+        .enable_all()
-+        .build()?;
-+    let result = runtime.block_on(run_hosted_session_view(
++    let result = run_hosted_session_view(
 +        HostedSessionConfig {
 +            thread_id: args.thread_id,
 +            cwd: args.cwd,
@@ -61,9 +63,10 @@ index 0000000000..7c0f864e77
 +            remote_auth_token: args.app_server_auth_token,
 +            no_alt_screen: args.no_alt_screen,
 +        },
-+        Arg0DispatchPaths::default(),
++        arg0_paths,
 +        LoaderOverrides::default(),
-+    ));
++    )
++    .await;
 +
 +    match result {
 +        Ok(HostedSessionExit::Detached) => std::process::exit(EXIT_DETACHED),
