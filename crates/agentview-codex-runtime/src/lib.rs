@@ -271,7 +271,7 @@ impl CodexRuntime {
             poll_interval: self.poll_interval,
             initialized: RuntimeInitialized {
                 user_agent: initialized.user_agent,
-                codex_home: initialized.codex_home,
+                codex_home: initialized.codex_home.into_path_buf(),
             },
         })
     }

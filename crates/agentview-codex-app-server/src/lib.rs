@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use codex_app_server_protocol::{
-    ClientInfo, ClientRequest, InitializeCapabilities, InitializeParams, JSONRPCError,
-    JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, RequestId,
+    ClientInfo, ClientRequest, InitializeCapabilities, InitializeParams, InitializeResponse,
+    JSONRPCError, JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, RequestId,
     ThreadResumeParams as CodexThreadResumeParams, ThreadStartParams as CodexThreadStartParams,
     TurnInterruptParams, TurnStartParams as CodexTurnStartParams, UserInput,
 };
@@ -17,15 +17,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InitializeResponse {
-    pub user_agent: String,
-    pub codex_home: PathBuf,
-    pub platform_family: String,
-    pub platform_os: String,
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct ThreadStartOptions {
