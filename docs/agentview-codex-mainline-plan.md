@@ -228,6 +228,9 @@ Current checkpoint:
 - `agentview-codex-app-server` now uses Codex's `JSONRPCMessage`,
   `JSONRPCRequest`, `JSONRPCNotification`, and `JSONRPCResponse` protocol
   types for wire parsing and request/notification/response serialization.
+- `agentview-codex-app-server` now serializes outbound `initialize`,
+  `thread/start`, `thread/resume`, `turn/start`, and `turn/interrupt` through
+  Codex's typed `ClientRequest` variants instead of hand-built JSON maps.
 - `agentview-core` delegates pending Codex server-request response construction
   to `agentview-codex-runtime` instead of hand-assembling those protocol
   payloads directly.

@@ -1,9 +1,12 @@
 use anyhow::{Context, Result, bail};
 use codex_app_server_protocol::{
-    JSONRPCError, JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, RequestId,
+    ClientInfo, ClientRequest, InitializeCapabilities, InitializeParams, JSONRPCError,
+    JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, RequestId,
+    ThreadResumeParams as CodexThreadResumeParams, ThreadStartParams as CodexThreadStartParams,
+    TurnInterruptParams, TurnStartParams as CodexTurnStartParams, UserInput,
 };
-use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -259,87 +262,103 @@ impl AppServerClient {
     }
 
     pub fn initialize(&mut self) -> Result<InitializeResponse> {
-        let result = self.request(
-            "initialize",
-            json!({
-                "clientInfo": {
-                    "name": "agentview",
-                    "title": "AgentView",
-                    "version": env!("CARGO_PKG_VERSION"),
+        let request_id = self.next_request_id()?;
+        let result = self.request_client(ClientRequest::Initialize {
+            request_id,
+            params: InitializeParams {
+                client_info: ClientInfo {
+                    name: "agentview".to_string(),
+                    title: Some("AgentView".to_string()),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
                 },
-                "capabilities": {
-                    "experimentalApi": true,
-                },
-            }),
-        )?;
+                capabilities: Some(InitializeCapabilities {
+                    experimental_api: true,
+                    opt_out_notification_methods: None,
+                }),
+            },
+        })?;
         self.notify("initialized", None)?;
         serde_json::from_value(result).context("failed to parse initialize response")
     }
 
     pub fn start_thread(&mut self, options: ThreadStartOptions) -> Result<ThreadStartResponse> {
-        let mut params = Map::new();
-        params.insert("experimentalRawEvents".to_string(), Value::Bool(false));
-        params.insert("persistExtendedHistory".to_string(), Value::Bool(false));
-        if let Some(cwd) = options.cwd {
-            params.insert("cwd".to_string(), path_value(&cwd));
-        }
-        if let Some(model) = options.model {
-            params.insert("model".to_string(), Value::String(model));
-        }
-        if let Some(approval_policy) = options.approval_policy {
-            params.insert("approvalPolicy".to_string(), Value::String(approval_policy));
-        }
-        if let Some(sandbox) = options.sandbox {
-            params.insert("sandbox".to_string(), Value::String(sandbox));
-        }
-
-        let result = self.request("thread/start", Value::Object(params))?;
+        let request_id = self.next_request_id()?;
+        let result = self.request_client(ClientRequest::ThreadStart {
+            request_id,
+            params: CodexThreadStartParams {
+                model: options.model,
+                model_provider: None,
+                service_tier: None,
+                cwd: options.cwd.as_deref().map(path_string),
+                approval_policy: parse_optional_protocol_value(
+                    "approvalPolicy",
+                    options.approval_policy,
+                )?,
+                approvals_reviewer: None,
+                sandbox: parse_optional_protocol_value("sandbox", options.sandbox)?,
+                permissions: None,
+                config: None,
+                service_name: None,
+                base_instructions: None,
+                developer_instructions: None,
+                personality: None,
+                ephemeral: None,
+                session_start_source: None,
+                thread_source: None,
+                environments: None,
+                dynamic_tools: None,
+                mock_experimental_field: None,
+                experimental_raw_events: false,
+                persist_extended_history: false,
+            },
+        })?;
         serde_json::from_value(result).context("failed to parse thread/start response")
     }
 
     pub fn resume_thread(&mut self, options: ThreadResumeOptions) -> Result<ThreadResumeResponse> {
-        let mut params = Map::new();
-        params.insert("threadId".to_string(), Value::String(options.thread_id));
-        if let Some(cwd) = options.cwd {
-            params.insert("cwd".to_string(), path_value(&cwd));
-        }
-        if let Some(model) = options.model {
-            params.insert("model".to_string(), Value::String(model));
-        }
-        if let Some(approval_policy) = options.approval_policy {
-            params.insert("approvalPolicy".to_string(), Value::String(approval_policy));
-        }
-        if let Some(sandbox) = options.sandbox {
-            params.insert("sandbox".to_string(), Value::String(sandbox));
-        }
-
-        let result = self.request("thread/resume", Value::Object(params))?;
+        let request_id = self.next_request_id()?;
+        let result = self.request_client(ClientRequest::ThreadResume {
+            request_id,
+            params: CodexThreadResumeParams {
+                thread_id: options.thread_id,
+                cwd: options.cwd.as_deref().map(path_string),
+                model: options.model,
+                approval_policy: parse_optional_protocol_value(
+                    "approvalPolicy",
+                    options.approval_policy,
+                )?,
+                sandbox: parse_optional_protocol_value("sandbox", options.sandbox)?,
+                ..Default::default()
+            },
+        })?;
         serde_json::from_value(result).context("failed to parse thread/resume response")
     }
 
     pub fn start_text_turn(&mut self, thread_id: &str, prompt: &str) -> Result<TurnStartResponse> {
-        let result = self.request(
-            "turn/start",
-            json!({
-                "threadId": thread_id,
-                "input": [{
-                    "type": "text",
-                    "text": prompt,
-                    "text_elements": [],
+        let request_id = self.next_request_id()?;
+        let result = self.request_client(ClientRequest::TurnStart {
+            request_id,
+            params: CodexTurnStartParams {
+                thread_id: thread_id.to_string(),
+                input: vec![UserInput::Text {
+                    text: prompt.to_string(),
+                    text_elements: Vec::new(),
                 }],
-            }),
-        )?;
+                ..Default::default()
+            },
+        })?;
         serde_json::from_value(result).context("failed to parse turn/start response")
     }
 
     pub fn interrupt_turn(&mut self, thread_id: &str, turn_id: &str) -> Result<()> {
-        self.request(
-            "turn/interrupt",
-            json!({
-                "threadId": thread_id,
-                "turnId": turn_id,
-            }),
-        )?;
+        let request_id = self.next_request_id()?;
+        self.request_client(ClientRequest::TurnInterrupt {
+            request_id,
+            params: TurnInterruptParams {
+                thread_id: thread_id.to_string(),
+                turn_id: turn_id.to_string(),
+            },
+        })?;
         Ok(())
     }
 
@@ -358,16 +377,25 @@ impl AppServerClient {
         self.request_with_timeout(method, params, DEFAULT_REQUEST_TIMEOUT)
     }
 
+    fn request_client(&mut self, request: ClientRequest) -> Result<Value> {
+        let id = request_id_to_value(request.id().clone());
+        self.write_json(
+            &serde_json::to_value(request)
+                .context("failed to encode app-server typed client request")?,
+        )?;
+        self.wait_for_response(&id, DEFAULT_REQUEST_TIMEOUT)
+    }
+
     pub fn request_with_timeout(
         &mut self,
         method: &str,
         params: Value,
         timeout: Duration,
     ) -> Result<Value> {
-        let id = Value::from(self.next_id);
-        self.next_id += 1;
+        let request_id = self.next_request_id()?;
+        let id = request_id_to_value(request_id.clone());
         let request = JSONRPCRequest {
-            id: request_id_from_value(&id)?,
+            id: request_id,
             method: method.to_string(),
             params: Some(params),
             trace: None,
@@ -388,6 +416,12 @@ impl AppServerClient {
             &serde_json::to_value(notification)
                 .context("failed to encode app-server JSON-RPC notification")?,
         )
+    }
+
+    fn next_request_id(&mut self) -> Result<RequestId> {
+        let id = i64::try_from(self.next_id).context("app-server request id overflowed i64")?;
+        self.next_id += 1;
+        Ok(RequestId::Integer(id))
     }
 
     pub fn next_event(&mut self, timeout: Duration) -> Result<Option<AppServerEvent>> {
@@ -720,8 +754,20 @@ fn rpc_error_from_protocol(error: JSONRPCError) -> RpcError {
     }
 }
 
-fn path_value(path: &Path) -> Value {
-    Value::String(path.to_string_lossy().into_owned())
+fn parse_optional_protocol_value<T>(field: &str, value: Option<String>) -> Result<Option<T>>
+where
+    T: DeserializeOwned,
+{
+    value
+        .map(|value| {
+            serde_json::from_value(Value::String(value.clone()))
+                .with_context(|| format!("invalid Codex app-server `{field}` value `{value}`"))
+        })
+        .transpose()
+}
+
+fn path_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 fn status_label(status: &Value) -> &str {
