@@ -3,7 +3,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEX_DIR="$ROOT_DIR/third_party/codex"
-PATCH_DIR="$ROOT_DIR/patches/codex"
 REF="${1:-rust-v0.130.0}"
 
 if [[ ! -d "$CODEX_DIR/.git" && ! -f "$CODEX_DIR/.git" ]]; then
@@ -20,16 +19,8 @@ fi
 git -C "$CODEX_DIR" fetch --tags origin
 git -C "$CODEX_DIR" checkout "$REF"
 
-PATCHES=()
-while IFS= read -r patch; do
-  PATCHES+=("$patch")
-done < <(find "$PATCH_DIR" -maxdepth 1 -type f -name '*.patch' | sort)
-if [[ "${#PATCHES[@]}" -gt 0 ]]; then
-  for patch in "${PATCHES[@]}"; do
-    git -C "$CODEX_DIR" apply "$patch"
-  done
-fi
-
 "$ROOT_DIR/tools/check-codex-patches.sh"
+"$ROOT_DIR/tools/build-codex-hosted-helper.sh" >/dev/null
 
 echo "codex ref: $(git -C "$CODEX_DIR" rev-parse HEAD)"
+echo "hosted helper: $ROOT_DIR/target/debug/agentview-codex-hosted"

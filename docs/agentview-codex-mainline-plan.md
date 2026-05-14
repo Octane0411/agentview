@@ -899,6 +899,12 @@ Current checkpoint:
 - `tools/build-codex-hosted-helper.sh` builds the helper from a patched Codex
   source copy under `target/agentview-codex-patched` and installs the binary at
   `target/debug/agentview-codex-hosted`.
+- `tools/build-dev.sh` builds the AgentView workspace and the matching hosted
+  helper in one command for local development.
+- `tools/update-codex.sh <ref>` now keeps `third_party/codex` as a clean
+  upstream submodule, verifies `patches/codex` with
+  `tools/check-codex-patches.sh`, and rebuilds the hosted helper from a patched
+  target copy.
 - `crates/agentview-codex-hosted` owns the AgentView-side hosted session
   contract and temporary helper invocation shape.
 - `HostedHelper::from_env_or_default()` resolves the helper from
@@ -1059,8 +1065,10 @@ The next implementation work should follow this order:
    - Answer from either AgentView list or hosted Codex view.
    - Detach/re-enter after the request is resolved.
 2. Formalize helper packaging and Codex update flow.
-   - Keep `tools/check-codex-patches.sh` and `tools/build-codex-hosted-helper.sh`
-     as the required checks when bumping `third_party/codex`.
+   - Keep `tools/build-dev.sh`, `tools/check-codex-patches.sh`, and
+     `tools/build-codex-hosted-helper.sh` as required development checks.
+   - Use `tools/update-codex.sh <ref>` to bump `third_party/codex` without
+     leaving patch changes applied in the submodule.
    - Document the tested Codex CLI/source version after every bump.
 3. Then fill the remaining parity gaps.
    - Dirty worktree cleanup protection.

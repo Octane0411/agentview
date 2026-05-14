@@ -2,16 +2,20 @@
 
 `agentview` is a local Agent View-style controller for Codex sessions.
 
-The current implementation is a Codex-only MVP. It uses the Codex CLI fallback path from the spec:
+The current implementation is a Codex-only MVP. The normal path is:
 
-- `codex exec --json` for background turns
-- `codex resume <thread_id>` for full interactive attach
-- one local job store under `~/.agentview`
-- one git worktree per dispatched job when the target directory is inside a git repo
+- AgentView starts `codex app-server` under a local supervisor.
+- AgentView stores local job metadata under `~/.agentview`.
+- Codex owns thread, turn, transcript, tool, and approval state.
+- Entering a row opens a hosted Codex session view built from the pinned Codex
+  source under `third_party/codex`.
+- `codex exec` / `codex resume` remain fallback/debug paths only.
 
-The full product spec lives in `docs/codex-agent-view-spec.md`.
+The product spec lives in `docs/codex-agent-view-spec.md`. The current
+execution plan lives in `docs/agentview-codex-mainline-plan.md`.
 
-The implementation is Rust-first and uses Serde schemas for persisted job/store boundaries.
+The implementation is Rust-first and uses Serde schemas for persisted job/store
+boundaries.
 
 ## Usage
 
@@ -71,23 +75,33 @@ Codex owns the conversation transcript and resume state. Agent View stores only 
 
 ## Current Limitations
 
-- This MVP does not use `codex app-server` yet.
-- Attach is implemented by suspending Agent View and running `codex resume <thread_id>`.
-- Approval handling is detected from JSON events, but live replies to an active `codex exec` turn require the app-server backend. The CLI fallback can resume a completed thread with `reply`/`respawn`.
-- The supervisor is implemented as detached per-job worker processes rather than a persistent daemon.
+- The attached session UI currently uses a patched helper process,
+  `agentview-codex-hosted`, built from `third_party/codex` plus
+  `patches/codex`.
+- Direct library-hosted Codex TUI is still the target shape.
+- The fallback `codex exec` backend cannot receive live replies while running.
+- PR status extraction and final Claude Agent View grouping parity are not
+  complete yet.
 
 ## Development
+
+Build development binaries:
+
+```bash
+tools/build-dev.sh
+```
+
+This builds:
+
+```text
+target/debug/agentview
+target/debug/agentview-codex-hosted
+```
 
 Run tests:
 
 ```bash
-cargo test
-```
-
-Build the CLI:
-
-```bash
-cargo build -p agentview-cli
+cargo test --workspace
 ```
 
 Run without installing globally:
@@ -96,10 +110,51 @@ Run without installing globally:
 cargo run -p agentview-cli -- help
 ```
 
+Build only the hosted helper from the pinned Codex source:
+
+```bash
+tools/build-codex-hosted-helper.sh
+```
+
 Install locally:
 
 ```bash
 cargo install --path crates/agentview-cli --force
 ```
 
-The integration test uses a fake `codex` executable to verify dispatch, list, peek, attach, and conservative worktree deletion. Manual real-Codex verification should still be run before relying on a release build.
+## Codex Source Updates
+
+Codex is pinned as a submodule:
+
+```text
+third_party/codex
+```
+
+AgentView changes to Codex live in:
+
+```text
+patches/codex/*.patch
+```
+
+Do not edit the submodule in place for normal AgentView work. To verify the
+patch queue:
+
+```bash
+tools/check-codex-patches.sh
+```
+
+To update the Codex pin and rebuild the hosted helper:
+
+```bash
+tools/update-codex.sh rust-v0.130.0
+```
+
+Real-Codex PTY verification:
+
+```bash
+tools/e2e-hosted-detach.sh
+```
+
+The integration tests use fake `codex` executables to verify dispatch, list,
+peek, attach, needs-input reply/approval, stop, and conservative worktree
+deletion. Run real-Codex E2E before relying on a release build.
