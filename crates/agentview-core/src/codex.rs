@@ -13,6 +13,7 @@ use agentview_codex_runtime::{
 };
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -387,10 +388,11 @@ fn handle_app_server_notification(
             }
         }
         "turn/started" => {
+            let pending = pending_mcp_startup_message(job_id)?;
             update_job(job_id, |job| {
                 job.status = JobStatus::Working;
                 job.process_state = ProcessState::Alive;
-                job.last_summary = Some("working".to_string());
+                job.last_summary = Some(pending.unwrap_or_else(|| "working".to_string()));
                 job.blocking_request = None;
                 Ok(())
             })?;
@@ -412,6 +414,21 @@ fn handle_app_server_notification(
                 })?;
                 write_job_last(job_id, latest_text.trim())?;
             }
+        }
+        "mcpServer/startupStatus/updated" => {
+            let pending = pending_mcp_startup_message(job_id)?;
+            update_job(job_id, |job| {
+                if let Some(message) = pending {
+                    job.last_summary = Some(message);
+                } else if job
+                    .last_summary
+                    .as_deref()
+                    .is_some_and(|summary| summary.starts_with("booting MCP"))
+                {
+                    job.last_summary = Some("working".to_string());
+                }
+                Ok(())
+            })?;
         }
         "turn/completed" => {
             let status = params
@@ -698,14 +715,6 @@ pub fn attach_hosted_codex(job: &Job, no_alt_screen: bool) -> Result<i32> {
             job.id
         )
     })?;
-    append_job_event(
-        &job.id,
-        &json!({
-            "type": "hosted_attach_started",
-            "threadId": thread_id.clone(),
-            "timestamp": now_iso()
-        }),
-    )?;
     let remote_url = supervisor_app_server_endpoint(&job.id)?;
     if matches!(job.process_state, ProcessState::Alive)
         && remote_url.as_deref().is_none_or(|url| url == "stdio://")
@@ -714,6 +723,28 @@ pub fn attach_hosted_codex(job: &Job, no_alt_screen: bool) -> Result<i32> {
             "Hosted attach to a running app-server job requires a connectable supervisor app-server endpoint."
         );
     }
+    if matches!(job.process_state, ProcessState::Alive)
+        && let Some(message) = pending_mcp_startup_message(&job.id)?
+    {
+        append_job_event(
+            &job.id,
+            &json!({
+                "type": "hosted_attach_deferred",
+                "threadId": thread_id,
+                "reason": message.clone(),
+                "timestamp": now_iso()
+            }),
+        )?;
+        bail!("Session is still {message}; try again in a moment.");
+    }
+    append_job_event(
+        &job.id,
+        &json!({
+            "type": "hosted_attach_started",
+            "threadId": thread_id.clone(),
+            "timestamp": now_iso()
+        }),
+    )?;
     if let Some(remote_url) = remote_url.as_deref().filter(|url| *url != "stdio://") {
         append_job_event(
             &job.id,
@@ -759,6 +790,46 @@ pub fn attach_hosted_codex(job: &Job, no_alt_screen: bool) -> Result<i32> {
     }
 }
 
+fn pending_mcp_startup_message(job_id: &str) -> Result<Option<String>> {
+    let events = read_job_events(job_id)?;
+    Ok(mcp_startup_message_from_events(&events))
+}
+
+fn mcp_startup_message_from_events(events: &[Value]) -> Option<String> {
+    let mut pending = BTreeSet::new();
+    for event in events {
+        if event.get("method").and_then(Value::as_str) != Some("mcpServer/startupStatus/updated") {
+            continue;
+        }
+        let params = event.get("params").unwrap_or(event);
+        let Some(name) = params.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(status) = params.get("status").and_then(Value::as_str) else {
+            continue;
+        };
+        match status {
+            "starting" => {
+                pending.insert(name.to_string());
+            }
+            "ready" | "failed" | "cancelled" | "canceled" => {
+                pending.remove(name);
+            }
+            _ => {}
+        }
+    }
+
+    if pending.is_empty() {
+        return None;
+    }
+    let names = pending.into_iter().collect::<Vec<_>>();
+    Some(if names.len() == 1 {
+        format!("booting MCP server: {}", names[0])
+    } else {
+        format!("booting MCP servers: {}", names.join(", "))
+    })
+}
+
 pub fn cwd_for_display(cwd: &str) -> String {
     let home = home_dir();
     let path = Path::new(cwd);
@@ -794,4 +865,104 @@ fn read_all(mut reader: impl Read) -> String {
     let mut text = String::new();
     let _ = reader.read_to_string(&mut text);
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_startup_message_tracks_single_pending_server() {
+        let events = vec![json!({
+            "method": "mcpServer/startupStatus/updated",
+            "params": {
+                "name": "codex_apps",
+                "status": "starting"
+            }
+        })];
+
+        assert_eq!(
+            mcp_startup_message_from_events(&events),
+            Some("booting MCP server: codex_apps".to_string())
+        );
+    }
+
+    #[test]
+    fn mcp_startup_message_clears_when_server_is_ready() {
+        let events = vec![
+            json!({
+                "method": "mcpServer/startupStatus/updated",
+                "params": {
+                    "name": "codex_apps",
+                    "status": "starting"
+                }
+            }),
+            json!({
+                "method": "mcpServer/startupStatus/updated",
+                "params": {
+                    "name": "codex_apps",
+                    "status": "ready"
+                }
+            }),
+        ];
+
+        assert_eq!(mcp_startup_message_from_events(&events), None);
+    }
+
+    #[test]
+    fn mcp_startup_message_is_deterministic_for_multiple_servers() {
+        let events = vec![
+            json!({
+                "method": "mcpServer/startupStatus/updated",
+                "params": {
+                    "name": "zeta",
+                    "status": "starting"
+                }
+            }),
+            json!({
+                "method": "mcpServer/startupStatus/updated",
+                "params": {
+                    "name": "alpha",
+                    "status": "starting"
+                }
+            }),
+        ];
+
+        assert_eq!(
+            mcp_startup_message_from_events(&events),
+            Some("booting MCP servers: alpha, zeta".to_string())
+        );
+    }
+
+    #[test]
+    fn mcp_startup_message_keeps_other_pending_servers_after_one_finishes() {
+        let events = vec![
+            json!({
+                "method": "mcpServer/startupStatus/updated",
+                "params": {
+                    "name": "alpha",
+                    "status": "starting"
+                }
+            }),
+            json!({
+                "method": "mcpServer/startupStatus/updated",
+                "params": {
+                    "name": "zeta",
+                    "status": "starting"
+                }
+            }),
+            json!({
+                "method": "mcpServer/startupStatus/updated",
+                "params": {
+                    "name": "alpha",
+                    "status": "failed"
+                }
+            }),
+        ];
+
+        assert_eq!(
+            mcp_startup_message_from_events(&events),
+            Some("booting MCP server: zeta".to_string())
+        );
+    }
 }

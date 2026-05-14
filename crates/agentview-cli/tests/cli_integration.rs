@@ -758,6 +758,103 @@ fn running_needs_input_attach_uses_hosted_endpoint_and_can_still_reply() {
 }
 
 #[test]
+fn running_attach_defers_while_mcp_startup_is_pending() {
+    let env = TestEnv::new();
+    let repo = env.git_repo();
+    let codex = env.fake_websocket_input_app_server_codex_with_pending_mcp();
+    let store = TempDir::new().unwrap();
+
+    let output = env
+        .agentview_default_transport(&store, &codex)
+        .args([
+            "run",
+            "--cwd",
+            repo.to_str().unwrap(),
+            "start a websocket request-user-input task while MCP is booting",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let job_id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("backgrounded"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("job id in run output")
+        .to_string();
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env
+            .agentview_default_transport(&store, &codex)
+            .arg("list")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains(&job_id) && stdout.contains("needs_input")
+    });
+
+    let (hosted_helper, hosted_log) = env.fake_hosted_helper();
+    let hosted = env
+        .agentview_default_transport(&store, &codex)
+        .env("AGENTVIEW_CODEX_HOSTED", hosted_helper)
+        .args(["attach", &job_id])
+        .output()
+        .unwrap();
+    assert!(!hosted.status.success());
+    assert!(
+        String::from_utf8_lossy(&hosted.stderr)
+            .contains("Session is still booting MCP server: codex_apps")
+    );
+    assert!(!hosted_log.exists());
+
+    let reply = env
+        .agentview_default_transport(&store, &codex)
+        .args(["reply", &job_id, "yes"])
+        .output()
+        .unwrap();
+    assert!(
+        reply.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reply.stderr)
+    );
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env
+            .agentview_default_transport(&store, &codex)
+            .args(["peek", &job_id])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains("websocket completed after answer yes") && stdout.contains("completed")
+    });
+
+    let logs = env
+        .agentview_default_transport(&store, &codex)
+        .args(["logs", &job_id])
+        .output()
+        .unwrap();
+    assert!(logs.status.success());
+    let logs_stdout = String::from_utf8_lossy(&logs.stdout);
+    assert!(logs_stdout.contains("hosted_attach_deferred"));
+    assert!(!logs_stdout.contains("hosted_attach_started"));
+
+    let shutdown = env
+        .agentview_default_transport(&store, &codex)
+        .arg("__supervisor-shutdown")
+        .output()
+        .unwrap();
+    assert!(
+        shutdown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shutdown.stderr)
+    );
+}
+
+#[test]
 fn tui_enter_on_needs_input_job_uses_hosted_endpoint_and_can_still_reply() {
     if Command::new("expect").arg("-v").output().is_err() {
         eprintln!("skipping TUI PTY integration: expect is not installed");
@@ -1399,10 +1496,26 @@ PY
     }
 
     fn fake_websocket_input_app_server_codex(&self) -> PathBuf {
-        let bin = self.root.path().join("ws-input-bin");
+        self.fake_websocket_input_app_server_codex_with_mcp_startup(false)
+    }
+
+    fn fake_websocket_input_app_server_codex_with_pending_mcp(&self) -> PathBuf {
+        self.fake_websocket_input_app_server_codex_with_mcp_startup(true)
+    }
+
+    fn fake_websocket_input_app_server_codex_with_mcp_startup(&self, pending_mcp: bool) -> PathBuf {
+        let bin = self.root.path().join(if pending_mcp {
+            "ws-input-mcp-bin"
+        } else {
+            "ws-input-bin"
+        });
         fs::create_dir_all(&bin).unwrap();
         let codex = bin.join("codex");
-        let codex_home = self.root.path().join("ws-input-codex-home");
+        let codex_home = self.root.path().join(if pending_mcp {
+            "ws-input-mcp-codex-home"
+        } else {
+            "ws-input-codex-home"
+        });
         fs::create_dir_all(&codex_home).unwrap();
         let script = r#"#!/bin/sh
 set -eu
@@ -1491,6 +1604,7 @@ send_frame({"id": thread["id"], "result": {"thread": {"id": thread_id, "sessionI
 turn = recv_frame()
 send_frame({"id": turn["id"], "result": {"turn": {"id": "turn-ws-1", "status": "running", "startedAt": 0, "completedAt": None, "durationMs": None}}})
 send_frame({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": "turn-ws-1", "status": "running", "startedAt": 0, "completedAt": None, "durationMs": None}}})
+__MCP_STARTUP__
 send_frame({"id": "req-ws-1", "method": "item/tool/requestUserInput", "params": {"threadId": thread_id, "turnId": "turn-ws-1", "itemId": "call1", "questions": [{"id": "confirm_path", "header": "Confirm", "question": "Continue?", "isOther": False, "isSecret": False, "options": None}]}})
 
 answer = recv_frame()
@@ -1507,7 +1621,15 @@ server.close()
 PY
 "#
         .replace("__CODEX_HOME__", &codex_home.to_string_lossy())
-        .replace("__THREAD_ID__", THREAD_ID);
+        .replace("__THREAD_ID__", THREAD_ID)
+        .replace(
+            "__MCP_STARTUP__",
+            if pending_mcp {
+                r#"send_frame({"method": "mcpServer/startupStatus/updated", "params": {"name": "codex_apps", "status": "starting"}})"#
+            } else {
+                ""
+            },
+        );
         fs::write(&codex, script).unwrap();
         let mut permissions = fs::metadata(&codex).unwrap().permissions();
         permissions.set_mode(0o755);
