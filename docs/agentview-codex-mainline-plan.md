@@ -535,9 +535,10 @@ Still missing from the normal path:
 - Release packaging is still pending. The local paired installer covers
   development installs only.
 - List TUI PTY automation covers enter/detach/re-enter and dirty-worktree
-  remove protection. Fake websocket integration covers hosted attach while a
-  job is in `needs_input`; deterministic real-Codex PTY coverage for that
-  state is still pending.
+  remove protection. Fake websocket PTY integration now covers pressing Enter
+  on a `needs_input` row, routing to the hosted helper, returning to the list,
+  and replying from the list afterward. Deterministic real-Codex PTY coverage
+  for that state is still pending.
 - Direct library-hosted Codex TUI remains the preferred long-term shape; the
   current MVP uses the helper-process bridge.
 
@@ -1269,8 +1270,10 @@ The next implementation work should follow this order:
    - [x] Keep release packaging separate from this local installer until the
      helper process is replaced or the release artifact layout is decided.
 2. Expand hosted-view and PTY coverage around `needs_input`.
-   - Keep the fake websocket integration for attach while a row is in
+   - [x] Keep the fake websocket integration for attach while a row is in
      `needs_input`.
+   - [x] Cover TUI Enter on a `needs_input` row with fake websocket app-server
+     and fake hosted helper.
    - Add deterministic real-Codex PTY coverage if Codex exposes a stable way to
      force a request-user-input or approval state.
    - Continue verifying that list-level reply can resolve the pending request

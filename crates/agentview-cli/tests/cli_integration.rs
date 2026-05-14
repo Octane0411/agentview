@@ -758,6 +758,149 @@ fn running_needs_input_attach_uses_hosted_endpoint_and_can_still_reply() {
 }
 
 #[test]
+fn tui_enter_on_needs_input_job_uses_hosted_endpoint_and_can_still_reply() {
+    if Command::new("expect").arg("-v").output().is_err() {
+        eprintln!("skipping TUI PTY integration: expect is not installed");
+        return;
+    }
+
+    let env = TestEnv::new();
+    let repo = env.git_repo();
+    let codex = env.fake_websocket_input_app_server_codex();
+    let store = TempDir::new().unwrap();
+
+    let output = env
+        .agentview_default_transport(&store, &codex)
+        .args([
+            "run",
+            "--cwd",
+            repo.to_str().unwrap(),
+            "start a websocket request-user-input task for TUI attach",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let job_id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("backgrounded"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("job id in run output")
+        .to_string();
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env
+            .agentview_default_transport(&store, &codex)
+            .arg("list")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains(&job_id) && stdout.contains("needs_input")
+    });
+
+    let (hosted_helper, hosted_log) = env.fake_hosted_helper();
+    let expect_script = env.root.path().join("tui-needs-input-attach.exp");
+    let expect_output = env.root.path().join("tui-needs-input-attach.out");
+    fs::write(
+        &expect_script,
+        r#"set timeout 30
+match_max 200000
+log_user 0
+log_file -noappend $env(AGENTVIEW_EXPECT_OUTPUT)
+stty rows 42 columns 132
+spawn $env(AGENTVIEW_TEST_BIN)
+after 1000
+send "\r"
+expect {
+  eof { exit 0 }
+  timeout { exit 11 }
+}
+"#,
+    )
+    .unwrap();
+
+    let fake_bin = codex.parent().unwrap();
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let tui = Command::new("expect")
+        .arg(&expect_script)
+        .env("AGENTVIEW_HOME", store.path())
+        .env("AGENTVIEW_CODEX_HOSTED", hosted_helper)
+        .env("AGENTVIEW_EXPECT_OUTPUT", &expect_output)
+        .env("AGENTVIEW_TEST_BIN", env!("CARGO_BIN_EXE_agentview"))
+        .env("AGENTVIEW_TUI_EXIT_AFTER_ATTACH", "1")
+        .env("COLUMNS", "132")
+        .env("LINES", "42")
+        .env("NO_COLOR", "1")
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        tui.status.success(),
+        "TUI attach failed\nstdout:\n{}\nstderr:\n{}\npty:\n{}",
+        String::from_utf8_lossy(&tui.stdout),
+        String::from_utf8_lossy(&tui.stderr),
+        fs::read_to_string(&expect_output).unwrap_or_default()
+    );
+
+    let hosted_args = fs::read_to_string(hosted_log).unwrap();
+    assert!(hosted_args.contains(&format!("--thread-id {THREAD_ID}")));
+    assert!(hosted_args.contains("--app-server-url ws://127.0.0.1:"));
+
+    let reply = env
+        .agentview_default_transport(&store, &codex)
+        .args(["reply", &job_id, "yes"])
+        .output()
+        .unwrap();
+    assert!(
+        reply.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reply.stderr)
+    );
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env
+            .agentview_default_transport(&store, &codex)
+            .args(["peek", &job_id])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains("websocket completed after answer yes") && stdout.contains("completed")
+    });
+
+    let logs = env
+        .agentview_default_transport(&store, &codex)
+        .args(["logs", &job_id])
+        .output()
+        .unwrap();
+    assert!(logs.status.success());
+    let logs_stdout = String::from_utf8_lossy(&logs.stdout);
+    assert!(logs_stdout.contains("hosted_attach_detached"));
+    assert!(logs_stdout.contains("agentview_list_returned_from_attach"));
+    assert!(logs_stdout.contains("agentview_server_request_reply_sent"));
+    assert!(!logs_stdout.contains("hosted_attach_quit"));
+    assert!(!logs_stdout.contains("conversation interrupted"));
+
+    let shutdown = env
+        .agentview_default_transport(&store, &codex)
+        .arg("__supervisor-shutdown")
+        .output()
+        .unwrap();
+    assert!(
+        shutdown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shutdown.stderr)
+    );
+}
+
+#[test]
 fn hidden_supervisor_accepts_ping_over_local_socket() {
     let env = TestEnv::new();
     let codex = env.fake_codex();
