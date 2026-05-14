@@ -317,6 +317,13 @@ pub fn find_recent_codex_session_id(job: &Job) -> Result<Option<String>> {
 
 pub fn attach_codex(job: &Job) -> Result<i32> {
     assert_codex_available()?;
+    if job.process_state == ProcessState::Alive
+        || matches!(job.status, JobStatus::Working | JobStatus::NeedsInput)
+    {
+        bail!(
+            "Live attach to a running fallback Codex exec session requires the app-server backend. Wait for this turn to finish, or stop it and resume after completion."
+        );
+    }
     if job.codex_thread_id.is_none() {
         bail!(
             "Job {} does not have a Codex thread id yet. Try again after the first Codex event arrives.",
