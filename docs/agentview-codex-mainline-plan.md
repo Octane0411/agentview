@@ -520,6 +520,8 @@ Current checkpoint:
 - Hidden `agentview __hosted-attach <job_id>` resolves an app-server-backed
   job to its Codex thread id and invokes the hosted helper with `--thread-id`
   and `--cwd`.
+- Public `agentview attach <job_id>` and TUI Enter now route app-server-backed
+  jobs to the hosted helper contract instead of `codex resume`.
 - Full `cargo test -p codex-tui hosted_detach --lib` still needs a successful
   Codex dependency fetch; the first attempt was blocked in dependency download
   by external network failures.

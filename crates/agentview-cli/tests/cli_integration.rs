@@ -192,7 +192,7 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
     let hosted = env
         .agentview(&store, &codex)
         .env("AGENTVIEW_CODEX_HOSTED", hosted_helper)
-        .args(["__hosted-attach", "--no-alt-screen", &job_id])
+        .args(["attach", &job_id])
         .output()
         .unwrap();
     assert!(
@@ -200,11 +200,10 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
         "{}",
         String::from_utf8_lossy(&hosted.stderr)
     );
-    assert!(String::from_utf8_lossy(&hosted.stdout).contains("detached"));
     let hosted_args = fs::read_to_string(hosted_log).unwrap();
     assert!(hosted_args.contains(&format!("--thread-id {THREAD_ID}")));
     assert!(hosted_args.contains(&format!("--cwd {worktree_path}")));
-    assert!(hosted_args.contains("--no-alt-screen"));
+    assert!(!hosted_args.contains("--no-alt-screen"));
 
     let logs = env
         .agentview(&store, &codex)

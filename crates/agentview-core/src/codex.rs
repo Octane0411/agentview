@@ -597,13 +597,10 @@ pub fn find_recent_codex_session_id(job: &Job) -> Result<Option<String>> {
 }
 
 pub fn attach_codex(job: &Job) -> Result<i32> {
-    assert_codex_available()?;
     if job.backend == JobBackend::AppServer {
-        bail!(
-            "Hosted attach for app-server-backed Codex jobs is not wired yet. Use `agentview peek {}` for now.",
-            job.id
-        );
+        return attach_hosted_codex(job, false);
     }
+    assert_codex_available()?;
     if job.process_state == ProcessState::Alive
         || matches!(job.status, JobStatus::Working | JobStatus::NeedsInput)
     {
