@@ -81,8 +81,14 @@ struct Counts {
 
 #[derive(Debug, Clone)]
 struct LastDelete {
-    job_id: String,
+    target: DeleteTarget,
     at: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeleteTarget {
+    Job(String),
+    Group(String),
 }
 
 #[derive(Debug)]
@@ -293,6 +299,15 @@ impl App {
             Some(Row::Header { dispatch_cwd, .. }) => dispatch_cwd.clone(),
             _ => None,
         }
+    }
+
+    fn selected_group(&self) -> Option<Group> {
+        let Some(Row::Header { key, .. }) = self.rows.get(self.selected) else {
+            return None;
+        };
+        self.grouped_jobs()
+            .into_iter()
+            .find(|group| group.key == *key)
     }
 
     fn handle_key(&mut self, key: KeyEvent, terminal: &mut Term) -> Result<bool> {
@@ -597,11 +612,16 @@ impl App {
     }
 
     fn stop_or_delete(&mut self) -> Result<()> {
+        if let Some(group) = self.selected_group() {
+            return self.confirm_or_remove_group(group);
+        }
+
         let Some(job) = self.selected_job() else {
             return Ok(());
         };
+        let target = DeleteTarget::Job(job.id.clone());
         let same_target = self.last_delete.as_ref().is_some_and(|last| {
-            last.job_id == job.id && last.at.elapsed() < Duration::from_secs(2)
+            last.target == target && last.at.elapsed() < Duration::from_secs(2)
         });
         if same_target {
             match remove_job(&job.id, Default::default()) {
@@ -614,11 +634,59 @@ impl App {
         }
         stop_job(&job.id)?;
         self.last_delete = Some(LastDelete {
-            job_id: job.id.clone(),
+            target,
             at: Instant::now(),
         });
         self.message = format!("stopped {}; press Ctrl+X again to delete", job.id);
         self.refresh()
+    }
+
+    fn confirm_or_remove_group(&mut self, group: Group) -> Result<()> {
+        if group.jobs.is_empty() {
+            return Ok(());
+        }
+
+        let target = DeleteTarget::Group(group.key.clone());
+        let same_target = self.last_delete.as_ref().is_some_and(|last| {
+            last.target == target && last.at.elapsed() < Duration::from_secs(2)
+        });
+        if !same_target {
+            self.last_delete = Some(LastDelete {
+                target,
+                at: Instant::now(),
+            });
+            self.message = format!(
+                "press Ctrl+X again to remove {} sessions in {}; dirty worktrees are refused",
+                group.jobs.len(),
+                group.label
+            );
+            return Ok(());
+        }
+
+        let label = group.label;
+        let mut removed = 0usize;
+        let mut failures = Vec::new();
+        for job in group.jobs {
+            match remove_job(&job.id, Default::default()) {
+                Ok(()) => removed += 1,
+                Err(error) => failures.push(format!("{}: {error}", job.id)),
+            }
+        }
+        self.last_delete = None;
+        self.refresh()?;
+        if failures.is_empty() {
+            self.message = format!("removed {removed} sessions from {label}");
+        } else {
+            self.message = truncate(
+                format!(
+                    "removed {removed}; failed {}: {}",
+                    failures.len(),
+                    failures.join("; ")
+                ),
+                160,
+            );
+        }
+        Ok(())
     }
 
     fn handle_ctrl_c(&mut self) -> bool {
@@ -759,7 +827,7 @@ impl App {
             frame.render_widget(input_widget, chunks[3]);
 
             frame.render_widget(
-                Paragraph::new("enter open/send/fold . space reply . ctrl+r rename . ctrl+x stop/delete . ctrl+s group . ctrl+t pin . ctrl+c clear/exit . ? help"),
+                Paragraph::new("enter open/send/fold . space reply . ctrl+r rename . ctrl+x stop/delete/group . ctrl+s group . ctrl+t pin . ctrl+c clear/exit . ? help"),
                 chunks[4],
             );
         })?;
@@ -838,7 +906,7 @@ fn render_help() -> Vec<Line<'static>> {
     [
         "Shortcuts",
         "up/down select . enter open or send . space peek/reply . right attach",
-        "shift+up/down reorder within group . ctrl+x stop, press again to delete",
+        "shift+up/down reorder within group . ctrl+x stop/delete row or remove group",
         "ctrl+r rename . ctrl+t pin . ctrl+s group by state/directory",
         "type a prompt to dispatch . with peek open, typed text replies to selected session",
         "ctrl+c clears input/panels; press twice to exit . esc exits or closes panels",
@@ -1046,6 +1114,59 @@ mod tests {
         assert!(app.toggle_selected_group());
 
         assert_eq!(app.dispatch_options().cwd, Some(PathBuf::from("/repo")));
+    }
+
+    #[test]
+    fn selected_group_includes_collapsed_jobs() {
+        let mut app = App {
+            jobs: vec![
+                job("first", JobStatus::Working, false, false),
+                job("second", JobStatus::Working, false, false),
+            ],
+            ..Default::default()
+        };
+        app.build_rows();
+        app.selected = 0;
+        assert!(app.toggle_selected_group());
+
+        let group = app.selected_group().unwrap();
+        assert_eq!(group.label, "Working");
+        assert_eq!(
+            group
+                .jobs
+                .iter()
+                .map(|job| job.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+    }
+
+    #[test]
+    fn ctrl_x_on_group_header_arms_bulk_remove() {
+        let mut app = App {
+            jobs: vec![
+                job("first", JobStatus::Working, false, false),
+                job("second", JobStatus::Working, false, false),
+            ],
+            ..Default::default()
+        };
+        app.build_rows();
+        app.selected = 0;
+
+        app.confirm_or_remove_group(app.selected_group().unwrap())
+            .unwrap();
+
+        assert!(matches!(
+            app.last_delete,
+            Some(LastDelete {
+                target: DeleteTarget::Group(ref key),
+                ..
+            }) if key == "state:Working"
+        ));
+        assert_eq!(
+            app.message,
+            "press Ctrl+X again to remove 2 sessions in Working; dirty worktrees are refused"
+        );
     }
 
     #[test]

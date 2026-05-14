@@ -253,6 +253,9 @@ Current checkpoint:
   the AgentView-owned title and `Esc` cancels without touching Codex state.
 - `Ctrl+C` now matches the spec: it clears input/panels first and exits only on
   a second press.
+- `Ctrl+X` on a group header now arms a two-step bulk remove for that visible
+  group; each row still goes through core `remove_job`, so dirty worktrees are
+  refused instead of silently deleted.
 - `agentview respawn --all` restarts every visible stopped session through the
   existing `respawn_job` path; app-server jobs therefore resume through the
   supervisor/app-server backend, not `codex resume`.
@@ -1098,5 +1101,4 @@ The next implementation work should follow this order:
    - Document the tested Codex CLI/source version after every bump.
 3. Then fill the remaining parity gaps.
    - PR status extraction.
-   - Group-header destructive flows.
    - Broader dirty-worktree removal coverage in real-Codex PTY E2E.
