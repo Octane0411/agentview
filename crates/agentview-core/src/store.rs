@@ -213,6 +213,17 @@ pub fn read_job_events(job_id: &str) -> Result<Vec<Value>> {
     Ok(events)
 }
 
+pub fn get_preference(key: &str) -> Result<Option<Value>> {
+    Ok(load_store()?.preferences.get(key).cloned())
+}
+
+pub fn set_preference(key: &str, value: Value) -> Result<()> {
+    with_store(|store| {
+        store.preferences.insert(key.to_string(), value);
+        Ok(())
+    })
+}
+
 pub fn remove_job_files(job_id: &str) -> Result<()> {
     let path = job_dir(job_id);
     if path_exists(&path) {

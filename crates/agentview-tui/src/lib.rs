@@ -3,7 +3,9 @@ use agentview_core::jobs::{
     DispatchOptions, dispatch_job, pin_job, remove_job, rename_job, reply_to_job, stop_job,
 };
 use agentview_core::schema::{Job, JobStatus};
-use agentview_core::store::{append_job_event, list_jobs, read_job_last};
+use agentview_core::store::{
+    append_job_event, get_preference, list_jobs, read_job_last, set_preference,
+};
 use agentview_core::util::{now_iso, relative_time, truncate};
 use anyhow::{Result, bail};
 use crossterm::cursor::{Hide, Show};
@@ -24,6 +26,7 @@ use std::io::{self, IsTerminal, Stdout};
 use std::time::{Duration, Instant};
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
+const GROUP_BY_PREFERENCE: &str = "tui.groupBy";
 
 #[derive(Debug, Clone)]
 enum Row {
@@ -35,6 +38,23 @@ enum Row {
 enum GroupBy {
     State,
     Cwd,
+}
+
+impl GroupBy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Cwd => "cwd",
+        }
+    }
+
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "state" => Some(Self::State),
+            "cwd" => Some(Self::Cwd),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -93,7 +113,9 @@ pub fn run() -> Result<()> {
     execute!(stdout, EnterAlternateScreen, Hide)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let result = App::default().run(&mut terminal);
+    let mut app = App::default();
+    app.load_preferences()?;
+    let result = app.run(&mut terminal);
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, Show)?;
     terminal.show_cursor()?;
@@ -131,6 +153,17 @@ impl App {
             }
         }
         self.last_refresh = Instant::now();
+        Ok(())
+    }
+
+    fn load_preferences(&mut self) -> Result<()> {
+        if let Some(value) = get_preference(GROUP_BY_PREFERENCE)?
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .and_then(GroupBy::from_str)
+        {
+            self.group_by = value;
+        }
         Ok(())
     }
 
@@ -271,6 +304,7 @@ impl App {
                 } else {
                     GroupBy::State
                 };
+                set_preference(GROUP_BY_PREFERENCE, json!(self.group_by.as_str()))?;
                 self.refresh()?;
             }
             KeyEvent {
@@ -355,7 +389,7 @@ impl App {
                     return Ok(false);
                 }
             }
-            match dispatch_job(&text, DispatchOptions::default()) {
+            match dispatch_job(&text, self.dispatch_options()) {
                 Ok(job) => self.message = format!("backgrounded {}", job.id),
                 Err(error) => self.message = error.to_string(),
             }
@@ -364,6 +398,26 @@ impl App {
         }
 
         self.attach_selected(terminal)
+    }
+
+    fn dispatch_options(&self) -> DispatchOptions {
+        DispatchOptions {
+            cwd: self.dispatch_target_cwd(),
+            ..Default::default()
+        }
+    }
+
+    fn dispatch_target_cwd(&self) -> Option<std::path::PathBuf> {
+        if self.group_by != GroupBy::Cwd {
+            return None;
+        }
+        self.selected_job().map(|job| {
+            std::path::PathBuf::from(if job.dispatch_cwd.is_empty() {
+                job.cwd
+            } else {
+                job.dispatch_cwd
+            })
+        })
     }
 
     fn attach_selected(&mut self, terminal: &mut Term) -> Result<bool> {
@@ -655,6 +709,7 @@ fn short_cwd(cwd: &str) -> String {
 mod tests {
     use super::*;
     use agentview_core::schema::{JobBackend, PrRef, ProcessState};
+    use std::path::PathBuf;
 
     #[test]
     fn state_grouping_matches_agent_view_order() {
@@ -705,6 +760,37 @@ mod tests {
         ]);
 
         assert_eq!(counts.completed, 3);
+    }
+
+    #[test]
+    fn directory_group_dispatch_uses_selected_row_directory() {
+        let mut selected = job("selected", JobStatus::Working, false, false);
+        selected.cwd = "/worktree".to_string();
+        selected.dispatch_cwd = "/repo".to_string();
+        let mut app = App {
+            jobs: vec![selected],
+            group_by: GroupBy::Cwd,
+            ..Default::default()
+        };
+        app.build_rows();
+        app.selected = 1;
+
+        assert_eq!(app.dispatch_options().cwd, Some(PathBuf::from("/repo")));
+    }
+
+    #[test]
+    fn state_group_dispatch_uses_current_process_directory() {
+        let mut selected = job("selected", JobStatus::Working, false, false);
+        selected.dispatch_cwd = "/repo".to_string();
+        let mut app = App {
+            jobs: vec![selected],
+            group_by: GroupBy::State,
+            ..Default::default()
+        };
+        app.build_rows();
+        app.selected = 1;
+
+        assert_eq!(app.dispatch_options().cwd, None);
     }
 
     fn job(id: &str, status: JobStatus, pinned: bool, pr: bool) -> Job {

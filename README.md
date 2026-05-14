@@ -59,7 +59,7 @@ agentview doctor
 - `Space`: peek selected session; when peek is open, typed input replies to that session
 - `Ctrl+X`: stop selected session; press again within two seconds to delete
 - `Ctrl+T`: pin/unpin
-- `Ctrl+S`: switch grouping between state and directory
+- `Ctrl+S`: switch grouping between state and directory; the choice persists
 - `?`: help
 - `Esc`: close panels or exit
 
@@ -71,7 +71,9 @@ Agent View metadata is stored under:
 ~/.agentview/
 ```
 
-Codex owns the conversation transcript and resume state. Agent View stores only job metadata, normalized event logs, and worktree mappings.
+Codex owns the conversation transcript and resume state. Agent View stores only
+job metadata, normalized event logs, worktree mappings, and local UI
+preferences.
 
 ## Current Limitations
 

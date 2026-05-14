@@ -239,6 +239,10 @@ Current checkpoint:
   icons preserving the per-row outcome.
 - Header completed counts exclude rows already promoted to `Ready for review`,
   matching the Claude Agent View example shape.
+- `Ctrl+S` group mode is persisted in `Store.preferences` under
+  `tui.groupBy`.
+- When grouped by directory, dispatch from the input uses the highlighted row's
+  original dispatch directory as `DispatchOptions.cwd`.
 
 Acceptance:
 
