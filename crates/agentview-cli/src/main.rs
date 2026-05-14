@@ -1,5 +1,5 @@
 use agentview_codex_app_server::{AppServerClient, ThreadStartOptions};
-use agentview_core::codex::attach_codex;
+use agentview_core::codex::{attach_codex, attach_hosted_codex};
 use agentview_core::jobs::{
     DispatchBackend, DispatchOptions, RemoveOptions, archive_job, dispatch_job, doctor, pin_job,
     remove_job, rename_job, reply_to_job, respawn_job, stop_job,
@@ -58,6 +58,12 @@ enum Commands {
     },
     #[command(about = "Resume full Codex conversation")]
     Attach { job_id: String },
+    #[command(hide = true, name = "__hosted-attach")]
+    HostedAttach {
+        #[arg(long)]
+        no_alt_screen: bool,
+        job_id: String,
+    },
     #[command(about = "Send a follow-up turn")]
     Reply {
         job_id: String,
@@ -140,6 +146,10 @@ fn run() -> Result<()> {
         Some(Commands::Peek { job_id }) => cmd_peek(&job_id),
         Some(Commands::Logs { job_id, limit }) => cmd_logs(&job_id, limit.unwrap_or(80)),
         Some(Commands::Attach { job_id }) => cmd_attach(&job_id),
+        Some(Commands::HostedAttach {
+            no_alt_screen,
+            job_id,
+        }) => cmd_hosted_attach(&job_id, no_alt_screen),
         Some(Commands::Reply { job_id, message }) => cmd_reply(&job_id, &message.join(" ")),
         Some(Commands::Approve { job_id }) => cmd_decision(&job_id, "approved"),
         Some(Commands::Decline { job_id }) => cmd_decision(&job_id, "declined"),
@@ -273,6 +283,17 @@ fn cmd_attach(job_id: &str) -> Result<()> {
     let job = require_job(job_id)?;
     attach_codex(&job)?;
     Ok(())
+}
+
+fn cmd_hosted_attach(job_id: &str, no_alt_screen: bool) -> Result<()> {
+    let job = require_job(job_id)?;
+    let code = attach_hosted_codex(&job, no_alt_screen)?;
+    if code == 0 {
+        println!("detached {job_id}");
+        Ok(())
+    } else {
+        bail!("hosted Codex exited with {code}");
+    }
 }
 
 fn cmd_reply(job_id: &str, prompt: &str) -> Result<()> {

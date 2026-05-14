@@ -184,6 +184,35 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
         serde_json::from_str(&fs::read_to_string(store.path().join("agentview.json")).unwrap())
             .unwrap();
     assert_eq!(store_json["jobs"][&job_id]["backend"], "app_server");
+    let worktree_path = store_json["jobs"][&job_id]["worktreePath"]
+        .as_str()
+        .expect("worktree path");
+
+    let (hosted_helper, hosted_log) = env.fake_hosted_helper();
+    let hosted = env
+        .agentview(&store, &codex)
+        .env("AGENTVIEW_CODEX_HOSTED", hosted_helper)
+        .args(["__hosted-attach", "--no-alt-screen", &job_id])
+        .output()
+        .unwrap();
+    assert!(
+        hosted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&hosted.stderr)
+    );
+    assert!(String::from_utf8_lossy(&hosted.stdout).contains("detached"));
+    let hosted_args = fs::read_to_string(hosted_log).unwrap();
+    assert!(hosted_args.contains(&format!("--thread-id {THREAD_ID}")));
+    assert!(hosted_args.contains(&format!("--cwd {worktree_path}")));
+    assert!(hosted_args.contains("--no-alt-screen"));
+
+    let logs = env
+        .agentview(&store, &codex)
+        .args(["logs", &job_id])
+        .output()
+        .unwrap();
+    assert!(logs.status.success());
+    assert!(String::from_utf8_lossy(&logs.stdout).contains("hosted_attach_detached"));
 
     let shutdown = env
         .agentview(&store, &codex)
@@ -503,6 +532,29 @@ printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"{THREAD_ID}","
         permissions.set_mode(0o755);
         fs::set_permissions(&codex, permissions).unwrap();
         codex
+    }
+
+    fn fake_hosted_helper(&self) -> (PathBuf, PathBuf) {
+        let bin = self.root.path().join("hosted-bin");
+        fs::create_dir_all(&bin).unwrap();
+        let helper = bin.join("agentview-codex-hosted");
+        let log = self.root.path().join("hosted-helper.args");
+        fs::write(
+            &helper,
+            format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" > "{}"
+exit 0
+"#,
+                log.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper, permissions).unwrap();
+        (helper, log)
     }
 }
 

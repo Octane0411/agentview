@@ -46,6 +46,7 @@ dependencies = [
 name = "agentview-core"
 version = "0.1.0"
 dependencies = [
+ "agentview-codex-hosted",
  "agentview-codex-runtime",
  "anyhow",
  "chrono",

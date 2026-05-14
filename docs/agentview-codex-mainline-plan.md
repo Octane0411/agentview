@@ -503,7 +503,8 @@ Tasks:
 3. [x] Build `agentview-codex-hosted` as a bridge crate.
 4. If direct library hosting is blocked by terminal ownership or workspace
    dependency shape, build a temporary hosted helper binary from the same patch.
-5. Open an app-server-created thread by id.
+5. [x] Add a hidden AgentView command that opens an app-server-created thread
+   by id through the hosted helper contract.
 6. Render Codex native conversation UI.
 7. Capture Left Arrow as detach when safe.
 8. Return to AgentView list without interrupting the turn.
@@ -516,6 +517,9 @@ Current checkpoint:
   pinned Codex submodule.
 - `crates/agentview-codex-hosted` owns the AgentView-side hosted session
   contract and temporary helper invocation shape.
+- Hidden `agentview __hosted-attach <job_id>` resolves an app-server-backed
+  job to its Codex thread id and invokes the hosted helper with `--thread-id`
+  and `--cwd`.
 - Full `cargo test -p codex-tui hosted_detach --lib` still needs a successful
   Codex dependency fetch; the first attempt was blocked in dependency download
   by external network failures.

@@ -6,6 +6,7 @@ use crate::util::{
     command_exists, event_failed, event_needs_input, extract_pr_refs, extract_thread_id, home_dir,
     merge_pr_refs, now_iso, path_exists, strip_ansi, summarize_event, truncate,
 };
+use agentview_codex_hosted::{HostedHelper, HostedSessionConfig, HostedSessionExit};
 use agentview_codex_runtime::{
     CodexRuntime, Notification, RuntimeEvent, RuntimeTurnOptions, ServerRequest,
 };
@@ -625,6 +626,58 @@ pub fn attach_codex(job: &Job) -> Result<i32> {
         .status()
         .context("failed to attach Codex session")?;
     Ok(status.code().unwrap_or(0))
+}
+
+pub fn attach_hosted_codex(job: &Job, no_alt_screen: bool) -> Result<i32> {
+    if job.backend != JobBackend::AppServer {
+        bail!("Hosted attach requires an app-server-backed Codex job");
+    }
+    let thread_id = job.codex_thread_id.clone().with_context(|| {
+        format!(
+            "Job {} does not have a Codex thread id yet. Try again after the first Codex event arrives.",
+            job.id
+        )
+    })?;
+    append_job_event(
+        &job.id,
+        &json!({
+            "type": "hosted_attach_started",
+            "threadId": thread_id.clone(),
+            "timestamp": now_iso()
+        }),
+    )?;
+    let config = HostedSessionConfig {
+        thread_id: thread_id.clone(),
+        cwd: PathBuf::from(&job.cwd),
+        remote_url: None,
+        remote_auth_token: None,
+        no_alt_screen,
+    };
+    match HostedHelper::from_env_or_default().run(&config)? {
+        HostedSessionExit::Detached => {
+            append_job_event(
+                &job.id,
+                &json!({
+                    "type": "hosted_attach_detached",
+                    "threadId": thread_id,
+                    "timestamp": now_iso()
+                }),
+            )?;
+            Ok(0)
+        }
+        HostedSessionExit::Quit(code) => {
+            append_job_event(
+                &job.id,
+                &json!({
+                    "type": "hosted_attach_quit",
+                    "threadId": thread_id,
+                    "exitCode": code,
+                    "timestamp": now_iso()
+                }),
+            )?;
+            Ok(code)
+        }
+    }
 }
 
 pub fn cwd_for_display(cwd: &str) -> String {
