@@ -36,6 +36,7 @@ name = "agentview-codex-app-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "codex-app-server-protocol",
  "serde",
  "serde_json",
  "tempfile",

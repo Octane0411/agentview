@@ -225,6 +225,9 @@ Current checkpoint:
 - `agentview-codex-runtime` now depends on `codex-app-server-protocol` and uses
   upstream protocol response types for request-user-input, v2 command/file
   approval, v2 permission approval, and v1 approval response payloads.
+- `agentview-codex-app-server` now uses Codex's `JSONRPCMessage`,
+  `JSONRPCRequest`, `JSONRPCNotification`, and `JSONRPCResponse` protocol
+  types for wire parsing and request/notification/response serialization.
 - `agentview-core` delegates pending Codex server-request response construction
   to `agentview-codex-runtime` instead of hand-assembling those protocol
   payloads directly.

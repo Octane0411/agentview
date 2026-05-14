@@ -1,4 +1,7 @@
 use anyhow::{Context, Result, bail};
+use codex_app_server_protocol::{
+    JSONRPCError, JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, RequestId,
+};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -341,10 +344,14 @@ impl AppServerClient {
     }
 
     pub fn resolve_server_request(&mut self, request_id: &Value, result: Value) -> Result<()> {
-        self.write_json(&json!({
-            "id": request_id,
-            "result": result,
-        }))
+        let response = JSONRPCResponse {
+            id: request_id_from_value(request_id)?,
+            result,
+        };
+        self.write_json(
+            &serde_json::to_value(response)
+                .context("failed to encode server request JSON-RPC response")?,
+        )
     }
 
     pub fn request(&mut self, method: &str, params: Value) -> Result<Value> {
@@ -359,21 +366,28 @@ impl AppServerClient {
     ) -> Result<Value> {
         let id = Value::from(self.next_id);
         self.next_id += 1;
-        self.write_json(&json!({
-            "id": id,
-            "method": method,
-            "params": params,
-        }))?;
+        let request = JSONRPCRequest {
+            id: request_id_from_value(&id)?,
+            method: method.to_string(),
+            params: Some(params),
+            trace: None,
+        };
+        self.write_json(
+            &serde_json::to_value(request)
+                .context("failed to encode app-server JSON-RPC request")?,
+        )?;
         self.wait_for_response(&id, timeout)
     }
 
     pub fn notify(&mut self, method: &str, params: Option<Value>) -> Result<()> {
-        let mut message = Map::new();
-        message.insert("method".to_string(), Value::String(method.to_string()));
-        if let Some(params) = params {
-            message.insert("params".to_string(), params);
-        }
-        self.write_json(&Value::Object(message))
+        let notification = JSONRPCNotification {
+            method: method.to_string(),
+            params,
+        };
+        self.write_json(
+            &serde_json::to_value(notification)
+                .context("failed to encode app-server JSON-RPC notification")?,
+        )
     }
 
     pub fn next_event(&mut self, timeout: Duration) -> Result<Option<AppServerEvent>> {
@@ -651,30 +665,58 @@ fn read_stderr(stderr: std::process::ChildStderr, lines: Arc<Mutex<Vec<String>>>
     }
 }
 
-fn wire_message_from_value(mut value: Value) -> Result<WireMessage> {
-    let object = value
-        .as_object_mut()
-        .context("app-server message is not an object")?;
+fn wire_message_from_value(value: Value) -> Result<WireMessage> {
+    let message = serde_json::from_value::<JSONRPCMessage>(value)
+        .context("failed to parse app-server JSON-RPC message")?;
+    match message {
+        JSONRPCMessage::Request(request) => Ok(WireMessage::Request(ServerRequest {
+            id: request_id_to_value(request.id),
+            method: request.method,
+            params: request.params.unwrap_or(Value::Null),
+        })),
+        JSONRPCMessage::Notification(notification) => Ok(WireMessage::Notification(Notification {
+            method: notification.method,
+            params: notification.params.unwrap_or(Value::Null),
+        })),
+        JSONRPCMessage::Response(response) => Ok(WireMessage::Response(ResponseMessage {
+            id: request_id_to_value(response.id),
+            result: Some(response.result),
+            error: None,
+        })),
+        JSONRPCMessage::Error(error) => Ok(WireMessage::Response(ResponseMessage {
+            id: request_id_to_value(error.id.clone()),
+            result: None,
+            error: Some(rpc_error_from_protocol(error)),
+        })),
+    }
+}
 
-    let id = object.remove("id");
-    let method = object
-        .remove("method")
-        .and_then(|value| value.as_str().map(ToOwned::to_owned));
-    let params = object.remove("params").unwrap_or(Value::Null);
+fn request_id_from_value(value: &Value) -> Result<RequestId> {
+    if let Some(value) = value.as_str() {
+        return Ok(RequestId::String(value.to_string()));
+    }
+    if let Some(value) = value.as_i64() {
+        return Ok(RequestId::Integer(value));
+    }
+    if let Some(value) = value.as_u64() {
+        let value = i64::try_from(value).context("JSON-RPC integer request id is too large")?;
+        return Ok(RequestId::Integer(value));
+    }
+    bail!("JSON-RPC request id must be a string or integer")
+}
 
-    match (id, method) {
-        (Some(id), Some(method)) => Ok(WireMessage::Request(ServerRequest { id, method, params })),
-        (None, Some(method)) => Ok(WireMessage::Notification(Notification { method, params })),
-        (Some(id), None) => {
-            let result = object.remove("result");
-            let error = object
-                .remove("error")
-                .map(serde_json::from_value)
-                .transpose()
-                .context("failed to parse app-server error")?;
-            Ok(WireMessage::Response(ResponseMessage { id, result, error }))
-        }
-        (None, None) => bail!("app-server message has neither method nor id"),
+fn request_id_to_value(id: RequestId) -> Value {
+    match id {
+        RequestId::String(value) => Value::String(value),
+        RequestId::Integer(value) => Value::from(value),
+    }
+}
+
+fn rpc_error_from_protocol(error: JSONRPCError) -> RpcError {
+    RpcError {
+        code: error.error.code,
+        message: error.error.message,
+        data: error.error.data,
     }
 }
 
