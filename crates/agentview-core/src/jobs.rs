@@ -1,6 +1,6 @@
 use crate::schema::{Job, JobBackend, JobStatus, ProcessState};
 use crate::store::{append_job_event, put_job, remove_job_files, require_job, update_job};
-use crate::supervisor::supervisor_start_app_server_turn;
+use crate::supervisor::{supervisor_start_app_server_turn, supervisor_stop_app_server_turn};
 use crate::util::{command_exists, extract_pr_refs, make_job_id, now_iso, title_from_prompt};
 use crate::worktree::{create_worktree, remove_worktree, worktree_has_changes};
 use anyhow::{Context, Result, bail};
@@ -204,9 +204,8 @@ pub fn respawn_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
 pub fn stop_job(job_id: &str) -> Result<()> {
     let job = require_job(job_id)?;
     if job.backend == JobBackend::AppServer && job.process_state == ProcessState::Alive {
-        bail!(
-            "Stopping a running app-server job requires supervisor turn/interrupt routing, which is not wired yet."
-        );
+        supervisor_stop_app_server_turn(job_id)?;
+        return Ok(());
     }
     if let Some(pid) = job.pid {
         signal_term(pid);

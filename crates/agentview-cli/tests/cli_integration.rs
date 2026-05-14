@@ -198,6 +198,86 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
 }
 
 #[test]
+fn app_server_stop_routes_turn_interrupt_through_supervisor() {
+    let env = TestEnv::new();
+    let repo = env.git_repo();
+    let codex = env.fake_slow_app_server_codex();
+    let store = TempDir::new().unwrap();
+
+    let output = env
+        .agentview(&store, &codex)
+        .args([
+            "run",
+            "--app-server",
+            "--cwd",
+            repo.to_str().unwrap(),
+            "start a slow fake app-server task",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let job_id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("backgrounded"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("job id in run output")
+        .to_string();
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env
+            .agentview(&store, &codex)
+            .args(["peek", &job_id])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains("slow fake app-server running") && stdout.contains("turn: turn-1")
+    });
+
+    let stop = env
+        .agentview(&store, &codex)
+        .args(["stop", &job_id])
+        .output()
+        .unwrap();
+    assert!(
+        stop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env.agentview(&store, &codex).arg("list").output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains(&job_id) && stdout.contains("stopped")
+    });
+
+    let logs = env
+        .agentview(&store, &codex)
+        .args(["logs", &job_id])
+        .output()
+        .unwrap();
+    assert!(logs.status.success());
+    let logs_stdout = String::from_utf8_lossy(&logs.stdout);
+    assert!(logs_stdout.contains("supervisor_app_server_turn_interrupt_requested"));
+    assert!(logs_stdout.contains("supervisor_app_server_turn_interrupt_sent"));
+
+    let shutdown = env
+        .agentview(&store, &codex)
+        .arg("__supervisor-shutdown")
+        .output()
+        .unwrap();
+    assert!(
+        shutdown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shutdown.stderr)
+    );
+}
+
+#[test]
 fn hidden_supervisor_accepts_ping_over_local_socket() {
     let env = TestEnv::new();
     let codex = env.fake_codex();
@@ -350,6 +430,70 @@ if [ "${{1:-}}" = "resume" ]; then
 fi
 printf '%s\n' "unknown fake codex command: $*" >&2
 exit 2
+"#,
+                codex_home = codex_home.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&codex).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&codex, permissions).unwrap();
+        codex
+    }
+
+    fn fake_slow_app_server_codex(&self) -> PathBuf {
+        let bin = self.root.path().join("slow-bin");
+        fs::create_dir_all(&bin).unwrap();
+        let codex = bin.join("codex");
+        let codex_home = self.root.path().join("slow-codex-home");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::write(
+            &codex,
+            format!(
+                r#"#!/bin/sh
+set -eu
+if [ "${{1:-}}" != "app-server" ] || [ "${{2:-}}" != "--listen" ] || [ "${{3:-}}" != "stdio://" ]; then
+  printf '%s\n' "unexpected args: $*" >&2
+  exit 2
+fi
+cwd="$(pwd)"
+IFS= read -r init
+case "$init" in
+  *'"method":"initialize"'*) ;;
+  *) printf '%s\n' "expected initialize, got: $init" >&2; exit 3 ;;
+esac
+printf '%s\n' '{{"id":0,"result":{{"userAgent":"fake-codex/0.0.0","codexHome":"{codex_home}","platformFamily":"unix","platformOs":"macos"}}}}'
+
+IFS= read -r initialized
+case "$initialized" in
+  *'"method":"initialized"'*) ;;
+  *) printf '%s\n' "expected initialized, got: $initialized" >&2; exit 4 ;;
+esac
+
+IFS= read -r thread_start
+case "$thread_start" in
+  *'"method":"thread/start"'*) ;;
+  *) printf '%s\n' "expected thread/start, got: $thread_start" >&2; exit 5 ;;
+esac
+printf '%s\n' "{{\"method\":\"thread/started\",\"params\":{{\"thread\":{{\"id\":\"{THREAD_ID}\",\"sessionId\":\"{THREAD_ID}\",\"preview\":\"\",\"status\":\"running\",\"cwd\":\"$cwd\",\"name\":null}}}}}}"
+printf '%s\n' "{{\"id\":1,\"result\":{{\"thread\":{{\"id\":\"{THREAD_ID}\",\"sessionId\":\"{THREAD_ID}\",\"preview\":\"\",\"status\":\"running\",\"cwd\":\"$cwd\",\"name\":null}},\"model\":\"fake-model\",\"modelProvider\":\"fake-provider\",\"serviceTier\":null,\"cwd\":\"$cwd\"}}}}"
+
+IFS= read -r turn_start
+case "$turn_start" in
+  *'"method":"turn/start"'*) ;;
+  *) printf '%s\n' "expected turn/start, got: $turn_start" >&2; exit 6 ;;
+esac
+printf '%s\n' '{{"id":2,"result":{{"turn":{{"id":"turn-1","status":"running","startedAt":0,"completedAt":null,"durationMs":null}}}}}}'
+printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"{THREAD_ID}","turn":{{"id":"turn-1","status":"running","startedAt":0,"completedAt":null,"durationMs":null}}}}}}'
+printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"{THREAD_ID}","turnId":"turn-1","itemId":"item-1","delta":"slow fake app-server running"}}}}'
+
+IFS= read -r interrupt
+case "$interrupt" in
+  *'"method":"turn/interrupt"'*'"threadId":"{THREAD_ID}"'*'"turnId":"turn-1"'*) ;;
+  *) printf '%s\n' "expected turn/interrupt, got: $interrupt" >&2; exit 7 ;;
+esac
+printf '%s\n' '{{"id":3,"result":{{}}}}'
+printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"{THREAD_ID}","turn":{{"id":"turn-1","status":"interrupted","startedAt":0,"completedAt":1,"durationMs":1}}}}}}'
 "#,
                 codex_home = codex_home.display()
             ),

@@ -484,9 +484,12 @@ Current checkpoint:
   AgentView worker process.
 - The supervisor starts the Codex app-server turn on a background thread and
   keeps the app-server child under the supervisor process while the turn runs.
-- Stop/live-reply routing to an already running app-server turn is still
-  pending; the next step is to keep an addressable running-session map inside
-  the supervisor and route `turn/interrupt`.
+- The supervisor keeps an addressable running-session map for active
+  app-server turns.
+- `agentview stop` on a running app-server-backed job routes through supervisor
+  IPC and sends Codex `turn/interrupt` instead of killing the supervisor
+  process.
+- Live reply to an already running app-server turn is still pending.
 
 ### Phase 4: Hosted Codex Source Spike
 

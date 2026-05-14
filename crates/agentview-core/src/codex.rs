@@ -272,16 +272,20 @@ fn run_codex_app_server_turn_inner(
     let runtime = CodexRuntime::default();
     if let Some(thread_id) = resume_thread_id {
         runtime.run_text_turn_on_thread(&thread_id, options, prompt, |event| {
-            handle_runtime_event(job_id, event, &mut latest_text)
+            handle_app_server_runtime_event(job_id, event, &mut latest_text)
         })
     } else {
         runtime.run_text_turn(options, prompt, |event| {
-            handle_runtime_event(job_id, event, &mut latest_text)
+            handle_app_server_runtime_event(job_id, event, &mut latest_text)
         })
     }
 }
 
-fn handle_runtime_event(job_id: &str, event: RuntimeEvent, latest_text: &mut String) -> Result<()> {
+pub(crate) fn handle_app_server_runtime_event(
+    job_id: &str,
+    event: RuntimeEvent,
+    latest_text: &mut String,
+) -> Result<()> {
     match event {
         RuntimeEvent::Initialized {
             user_agent,
@@ -411,9 +415,12 @@ fn handle_app_server_notification(
                 .and_then(|turn| turn.get("status"))
                 .and_then(app_server_status_label)
                 .unwrap_or("completed");
+            let interrupted = matches!(status, "interrupted");
             let failed = matches!(status, "failed" | "error" | "cancelled" | "canceled");
             update_job(job_id, |job| {
-                job.status = if failed {
+                job.status = if interrupted {
+                    JobStatus::Stopped
+                } else if failed {
                     JobStatus::Failed
                 } else {
                     JobStatus::Completed
@@ -422,11 +429,13 @@ fn handle_app_server_notification(
                 job.pid = None;
                 job.active_worker_pid = None;
                 job.codex_turn_id = None;
-                job.exit_code = Some(if failed { 1 } else { 0 });
+                job.exit_code = Some(if failed || interrupted { 1 } else { 0 });
                 job.completed_at = Some(now_iso());
                 job.blocking_request = None;
                 job.last_summary = Some(if latest_text.trim().is_empty() {
-                    if failed {
+                    if interrupted {
+                        "stopped".to_string()
+                    } else if failed {
                         format!("failed: {status}")
                     } else {
                         "completed".to_string()
