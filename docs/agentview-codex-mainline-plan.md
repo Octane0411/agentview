@@ -92,7 +92,8 @@ agentview/
 Pinned source:
 
 ```text
-third_party/codex -> openai/codex tag rust-v0.130.0 initially
+third_party/codex -> openai/codex tag rust-v0.130.0
+commit: 58573da43ab697e8b79f152c53df4b42230395a8
 ```
 
 Codex crates we expect to consume by path:
@@ -285,14 +286,16 @@ Exit criteria:
 
 ### Phase 1: Vendor Codex Source
 
+Status: implemented for the initial pin.
+
 Tasks:
 
-1. Add `third_party/codex` as a git submodule pinned to `rust-v0.130.0`.
-2. Add `patches/codex`.
-3. Add `tools/update-codex.sh` to move the submodule, reapply patches, and run
+1. [x] Add `third_party/codex` as a git submodule pinned to `rust-v0.130.0`.
+2. [x] Add `patches/codex`.
+3. [x] Add `tools/update-codex.sh` to move the submodule, reapply patches, and run
    focused checks.
-4. Add `tools/check-codex-patches.sh` to verify patches apply cleanly.
-5. Document the pinned Codex commit in this file.
+4. [x] Add `tools/check-codex-patches.sh` to verify patches apply cleanly.
+5. [x] Document the pinned Codex commit in this file.
 
 Exit criteria:
 
