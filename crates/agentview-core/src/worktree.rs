@@ -81,11 +81,11 @@ pub fn worktree_has_changes(worktree_path: Option<&str>) -> Result<bool> {
     let Some(worktree_path) = worktree_path else {
         return Ok(false);
     };
-    let output = run_command(
-        "git",
-        &["status", "--porcelain"],
-        Some(Path::new(worktree_path)),
-    )?;
+    let path = Path::new(worktree_path);
+    if !path_exists(path) {
+        return Ok(false);
+    }
+    let output = run_command("git", &["status", "--porcelain"], Some(path))?;
     if output.code != 0 {
         return Ok(true);
     }
@@ -97,18 +97,23 @@ pub fn remove_worktree(worktree_path: Option<&str>, force: bool) -> Result<()> {
         return Ok(());
     };
     let path = PathBuf::from(worktree_path);
-    let mut args = vec!["worktree", "remove"];
-    if force {
-        args.push("--force");
-    }
-    args.push(worktree_path);
-
     let cwd = path
         .parent()
         .and_then(Path::parent)
         .and_then(Path::parent)
         .map(Path::to_path_buf)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    if !path_exists(&path) {
+        if path_exists(&cwd) {
+            let _ = run_command("git", &["worktree", "prune"], Some(&cwd));
+        }
+        return Ok(());
+    }
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(worktree_path);
 
     let output = run_command("git", &args, Some(&cwd)).context("failed to remove git worktree")?;
     if output.code == 0 {
@@ -128,4 +133,30 @@ pub fn remove_worktree(worktree_path: Option<&str>, force: bool) -> Result<()> {
         fs::remove_dir_all(path)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn missing_worktree_is_not_dirty() {
+        let temp = TempDir::new().unwrap();
+        let missing = temp.path().join("missing");
+
+        assert!(!worktree_has_changes(Some(missing.to_str().unwrap())).unwrap());
+    }
+
+    #[test]
+    fn removing_missing_worktree_is_ok() {
+        let temp = TempDir::new().unwrap();
+        let missing = temp
+            .path()
+            .join(".agentview")
+            .join("worktrees")
+            .join("missing");
+
+        remove_worktree(Some(missing.to_str().unwrap()), false).unwrap();
+    }
 }
