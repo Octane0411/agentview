@@ -251,6 +251,9 @@ Current checkpoint:
   group and persists the order in `Job.manualOrder`.
 - `Ctrl+R` starts inline rename mode for the selected session; `Enter` saves
   the AgentView-owned title and `Esc` cancels without touching Codex state.
+- `agentview respawn --all` restarts every visible stopped session through the
+  existing `respawn_job` path; app-server jobs therefore resume through the
+  supervisor/app-server backend, not `codex resume`.
 
 Acceptance:
 
@@ -1092,5 +1095,6 @@ The next implementation work should follow this order:
      leaving patch changes applied in the submodule.
    - Document the tested Codex CLI/source version after every bump.
 3. Then fill the remaining parity gaps.
-   - Dirty worktree cleanup protection.
-   - Completed/failed grouping and PR status extraction.
+   - PR status extraction.
+   - Group-header destructive flows.
+   - Broader dirty-worktree removal coverage in real-Codex PTY E2E.

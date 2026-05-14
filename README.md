@@ -43,6 +43,8 @@ agentview reply <job_id> "continue and run tests"
 agentview approve <job_id>
 agentview decline <job_id>
 agentview stop <job_id>
+agentview respawn <job_id>
+agentview respawn --all
 agentview rm <job_id>
 ```
 

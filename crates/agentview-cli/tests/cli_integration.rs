@@ -226,6 +226,79 @@ fn app_server_dispatch_uses_thread_and_turn_start() {
 }
 
 #[test]
+fn respawn_all_restarts_stopped_app_server_jobs() {
+    let env = TestEnv::new();
+    let repo = env.git_repo();
+    let codex = env.fake_codex();
+    let store = TempDir::new().unwrap();
+
+    let first = run_app_server_job(&env, &store, &codex, &repo, "first stopped task");
+    let second = run_app_server_job(&env, &store, &codex, &repo, "second stopped task");
+
+    for job_id in [&first, &second] {
+        wait_until(Duration::from_secs(5), || {
+            let output = env.agentview(&store, &codex).arg("list").output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout.contains(job_id) && stdout.contains("completed")
+        });
+        let stop = env
+            .agentview(&store, &codex)
+            .args(["stop", job_id])
+            .output()
+            .unwrap();
+        assert!(
+            stop.status.success(),
+            "{}",
+            String::from_utf8_lossy(&stop.stderr)
+        );
+    }
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env.agentview(&store, &codex).arg("list").output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        [&first, &second]
+            .iter()
+            .all(|job_id| stdout.contains(*job_id) && stdout.contains("stopped"))
+    });
+
+    let respawn = env
+        .agentview(&store, &codex)
+        .args(["respawn", "--all"])
+        .output()
+        .unwrap();
+    assert!(
+        respawn.status.success(),
+        "{}",
+        String::from_utf8_lossy(&respawn.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&respawn.stdout);
+    assert!(stdout.contains(&format!("respawned {first}")));
+    assert!(stdout.contains(&format!("respawned {second}")));
+
+    for job_id in [&first, &second] {
+        wait_until(Duration::from_secs(5), || {
+            let output = env
+                .agentview(&store, &codex)
+                .args(["peek", job_id])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout).contains("completed fake app-server reply")
+        });
+    }
+
+    let shutdown = env
+        .agentview(&store, &codex)
+        .arg("__supervisor-shutdown")
+        .output()
+        .unwrap();
+    assert!(
+        shutdown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shutdown.stderr)
+    );
+}
+
+#[test]
 fn app_server_stop_routes_turn_interrupt_through_supervisor() {
     let env = TestEnv::new();
     let repo = env.git_repo();
@@ -1296,6 +1369,31 @@ fn run(command: &str, args: &[&str], cwd: &Path) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn run_app_server_job(
+    env: &TestEnv,
+    store: &TempDir,
+    codex: &Path,
+    repo: &Path,
+    prompt: &str,
+) -> String {
+    let output = env
+        .agentview(store, codex)
+        .args(["run", "--cwd", repo.to_str().unwrap(), prompt])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("backgrounded"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("job id in run output")
+        .to_string()
 }
 
 fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {

@@ -76,7 +76,7 @@ enum Commands {
     Approve { job_id: String },
     #[command(alias = "deny", about = "Send a decline reply")]
     Decline { job_id: String },
-    #[command(alias = "interrupt", about = "Stop a running job")]
+    #[command(alias = "interrupt", alias = "kill", about = "Stop a running job")]
     Stop { job_id: String },
     #[command(alias = "remove", about = "Remove a job")]
     Rm {
@@ -98,8 +98,13 @@ enum Commands {
     },
     #[command(about = "Pin or unpin a job")]
     Pin { job_id: String },
-    #[command(about = "Send a follow-up turn in the background")]
-    Respawn { job_id: String, prompt: Vec<String> },
+    #[command(about = "Restart a stopped session in the background")]
+    Respawn {
+        #[arg(long)]
+        all: bool,
+        job_id: Option<String>,
+        prompt: Vec<String>,
+    },
     #[command(about = "Check local dependencies")]
     Doctor,
     #[command(hide = true, name = "__app-server-smoke")]
@@ -175,7 +180,11 @@ fn run() -> Result<()> {
         Some(Commands::Unarchive { job_id }) => cmd_archive(&job_id, false),
         Some(Commands::Rename { job_id, title }) => cmd_rename(&job_id, &title.join(" ")),
         Some(Commands::Pin { job_id }) => cmd_pin(&job_id),
-        Some(Commands::Respawn { job_id, prompt }) => cmd_respawn(&job_id, &prompt.join(" ")),
+        Some(Commands::Respawn {
+            all,
+            job_id,
+            prompt,
+        }) => cmd_respawn(all, job_id.as_deref(), &prompt.join(" ")),
         Some(Commands::Doctor) => cmd_doctor(),
         Some(Commands::AppServerSmoke { cwd }) => cmd_app_server_smoke(cwd),
         Some(Commands::Supervisor { once }) => run_supervisor(once),
@@ -363,15 +372,51 @@ fn cmd_pin(job_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_respawn(job_id: &str, prompt: &str) -> Result<()> {
+fn cmd_respawn(all: bool, job_id: Option<&str>, prompt: &str) -> Result<()> {
     let prompt = if prompt.trim().is_empty() {
         "Continue the previous task."
     } else {
         prompt
     };
+    if all {
+        if job_id.is_some() {
+            bail!("Usage: agentview respawn --all");
+        }
+        return cmd_respawn_all(prompt);
+    }
+    let Some(job_id) = job_id else {
+        bail!("Usage: agentview respawn <job_id> [prompt]");
+    };
     let pid = respawn_job(job_id, prompt)?;
     println!("respawned {job_id}  pid {}", format_pid(pid));
     Ok(())
+}
+
+fn cmd_respawn_all(prompt: &str) -> Result<()> {
+    let stopped: Vec<_> = list_jobs(false)?
+        .into_iter()
+        .filter(|job| job.status == JobStatus::Stopped)
+        .collect();
+    if stopped.is_empty() {
+        println!("no stopped jobs");
+        return Ok(());
+    }
+
+    let mut failures = Vec::new();
+    for job in stopped {
+        match respawn_job(&job.id, prompt) {
+            Ok(pid) => println!("respawned {}  pid {}", job.id, format_pid(pid)),
+            Err(error) => {
+                eprintln!("failed {}: {error:#}", job.id);
+                failures.push(job.id);
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        bail!("failed to respawn {} job(s)", failures.len())
+    }
 }
 
 fn cmd_doctor() -> Result<()> {
