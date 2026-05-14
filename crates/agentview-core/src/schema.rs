@@ -88,6 +88,12 @@ pub struct Job {
     pub backend: JobBackend,
     #[serde(rename = "codexThreadId")]
     pub codex_thread_id: Option<String>,
+    #[serde(
+        rename = "codexTurnId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub codex_turn_id: Option<String>,
     pub title: String,
     #[serde(rename = "initialPrompt")]
     pub initial_prompt: String,

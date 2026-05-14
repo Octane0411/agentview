@@ -35,10 +35,23 @@ pub enum RuntimeEvent {
     ServerRequest(ServerRequest),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeInitialized {
+    pub user_agent: String,
+    pub codex_home: PathBuf,
+}
+
 #[derive(Debug, Clone)]
 pub struct CodexRuntime {
     poll_interval: Duration,
     codex_binary: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+pub struct CodexRuntimeSession {
+    client: AppServerClient,
+    poll_interval: Duration,
+    initialized: RuntimeInitialized,
 }
 
 impl Default for CodexRuntime {
@@ -62,27 +75,17 @@ impl CodexRuntime {
         prompt: &str,
         mut on_event: impl FnMut(RuntimeEvent) -> Result<()>,
     ) -> Result<()> {
-        let mut client = self.spawn_client()?;
-        let initialized = client.initialize()?;
-        on_event(RuntimeEvent::Initialized {
-            user_agent: initialized.user_agent,
-            codex_home: initialized.codex_home,
-        })?;
+        let mut session = self.spawn_session()?;
+        on_event(session.initialized_event())?;
 
-        let started = client.start_thread(ThreadStartOptions {
-            cwd: Some(options.cwd),
-            model: options.model,
-            approval_policy: Some(options.approval_policy),
-            sandbox: Some(options.sandbox),
-        })?;
-        let thread_id = started.thread.id.clone();
+        let thread_id = session.start_thread(options)?;
         on_event(RuntimeEvent::ThreadStarted {
             thread_id: thread_id.clone(),
         })?;
 
-        self.start_turn_and_drain(&mut client, thread_id, prompt, &mut on_event)?;
+        self.start_turn_and_drain(&mut session, thread_id, prompt, &mut on_event)?;
 
-        client.shutdown()?;
+        session.shutdown()?;
         Ok(())
     }
 
@@ -93,56 +96,59 @@ impl CodexRuntime {
         prompt: &str,
         mut on_event: impl FnMut(RuntimeEvent) -> Result<()>,
     ) -> Result<()> {
-        let mut client = self.spawn_client()?;
-        let initialized = client.initialize()?;
-        on_event(RuntimeEvent::Initialized {
-            user_agent: initialized.user_agent,
-            codex_home: initialized.codex_home,
-        })?;
+        let mut session = self.spawn_session()?;
+        on_event(session.initialized_event())?;
 
-        let resumed = client.resume_thread(ThreadResumeOptions {
-            thread_id: thread_id.to_string(),
-            cwd: Some(options.cwd),
-            model: options.model,
-            approval_policy: Some(options.approval_policy),
-            sandbox: Some(options.sandbox),
-        })?;
-        let thread_id = resumed.thread.id.clone();
+        let thread_id = session.resume_thread(thread_id, options)?;
         on_event(RuntimeEvent::ThreadResumed {
             thread_id: thread_id.clone(),
         })?;
 
-        self.start_turn_and_drain(&mut client, thread_id, prompt, &mut on_event)?;
+        self.start_turn_and_drain(&mut session, thread_id, prompt, &mut on_event)?;
 
-        client.shutdown()?;
+        session.shutdown()?;
         Ok(())
+    }
+
+    pub fn spawn_session(&self) -> Result<CodexRuntimeSession> {
+        let mut client = self.spawn_client()?;
+        let initialized = client.initialize()?;
+        Ok(CodexRuntimeSession {
+            client,
+            poll_interval: self.poll_interval,
+            initialized: RuntimeInitialized {
+                user_agent: initialized.user_agent,
+                codex_home: initialized.codex_home,
+            },
+        })
     }
 
     fn start_turn_and_drain(
         &self,
-        client: &mut AppServerClient,
+        session: &mut CodexRuntimeSession,
         thread_id: String,
         prompt: &str,
         on_event: &mut impl FnMut(RuntimeEvent) -> Result<()>,
     ) -> Result<()> {
-        let turn = client.start_text_turn(&thread_id, prompt)?;
+        let turn_id = session.start_text_turn(&thread_id, prompt)?;
         on_event(RuntimeEvent::TurnStarted {
             thread_id: thread_id.clone(),
-            turn_id: turn.turn.id,
+            turn_id,
         })?;
 
         loop {
-            match client.next_event(self.poll_interval)? {
-                Some(AppServerEvent::Notification(notification)) => {
+            match session.next_event()? {
+                Some(RuntimeEvent::Notification(notification)) => {
                     let completed = notification.method == "turn/completed";
                     on_event(RuntimeEvent::Notification(notification))?;
                     if completed {
                         break;
                     }
                 }
-                Some(AppServerEvent::ServerRequest(request)) => {
+                Some(RuntimeEvent::ServerRequest(request)) => {
                     on_event(RuntimeEvent::ServerRequest(request))?;
                 }
+                Some(event) => on_event(event)?,
                 None => {}
             }
         }
@@ -157,6 +163,69 @@ impl CodexRuntime {
             return AppServerClient::spawn_with_command(command);
         }
         AppServerClient::spawn_stdio()
+    }
+}
+
+impl CodexRuntimeSession {
+    pub fn initialized(&self) -> &RuntimeInitialized {
+        &self.initialized
+    }
+
+    pub fn initialized_event(&self) -> RuntimeEvent {
+        RuntimeEvent::Initialized {
+            user_agent: self.initialized.user_agent.clone(),
+            codex_home: self.initialized.codex_home.clone(),
+        }
+    }
+
+    pub fn start_thread(&mut self, options: RuntimeTurnOptions) -> Result<String> {
+        let started = self.client.start_thread(ThreadStartOptions {
+            cwd: Some(options.cwd),
+            model: options.model,
+            approval_policy: Some(options.approval_policy),
+            sandbox: Some(options.sandbox),
+        })?;
+        Ok(started.thread.id)
+    }
+
+    pub fn resume_thread(
+        &mut self,
+        thread_id: &str,
+        options: RuntimeTurnOptions,
+    ) -> Result<String> {
+        let resumed = self.client.resume_thread(ThreadResumeOptions {
+            thread_id: thread_id.to_string(),
+            cwd: Some(options.cwd),
+            model: options.model,
+            approval_policy: Some(options.approval_policy),
+            sandbox: Some(options.sandbox),
+        })?;
+        Ok(resumed.thread.id)
+    }
+
+    pub fn start_text_turn(&mut self, thread_id: &str, prompt: &str) -> Result<String> {
+        let turn = self.client.start_text_turn(thread_id, prompt)?;
+        Ok(turn.turn.id)
+    }
+
+    pub fn interrupt_turn(&mut self, thread_id: &str, turn_id: &str) -> Result<()> {
+        self.client.interrupt_turn(thread_id, turn_id)
+    }
+
+    pub fn next_event(&mut self) -> Result<Option<RuntimeEvent>> {
+        match self.client.next_event(self.poll_interval)? {
+            Some(AppServerEvent::Notification(notification)) => {
+                Ok(Some(RuntimeEvent::Notification(notification)))
+            }
+            Some(AppServerEvent::ServerRequest(request)) => {
+                Ok(Some(RuntimeEvent::ServerRequest(request)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn shutdown(self) -> Result<()> {
+        self.client.shutdown()
     }
 }
 

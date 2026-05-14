@@ -264,6 +264,17 @@ impl AppServerClient {
         serde_json::from_value(result).context("failed to parse turn/start response")
     }
 
+    pub fn interrupt_turn(&mut self, thread_id: &str, turn_id: &str) -> Result<()> {
+        self.request(
+            "turn/interrupt",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+            }),
+        )?;
+        Ok(())
+    }
+
     pub fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         self.request_with_timeout(method, params, DEFAULT_REQUEST_TIMEOUT)
     }

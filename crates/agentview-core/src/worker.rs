@@ -41,6 +41,7 @@ pub fn worker_main(job_id: &str, mode: &str, prompt: Option<&str>) -> Result<()>
             job.process_state = ProcessState::Exited;
             job.pid = None;
             job.active_worker_pid = None;
+            job.codex_turn_id = None;
             job.completed_at = Some(now_iso());
             job.last_summary = Some(format!("failed: {message}"));
             job.error = Some(message.clone());

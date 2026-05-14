@@ -207,6 +207,9 @@ fn cmd_peek(job_id: &str) -> Result<()> {
     if let Some(thread_id) = &job.codex_thread_id {
         println!("thread: {thread_id}");
     }
+    if let Some(turn_id) = &job.codex_turn_id {
+        println!("turn: {turn_id}");
+    }
     if let Some(worktree_path) = &job.worktree_path {
         println!("worktree: {worktree_path}");
     }

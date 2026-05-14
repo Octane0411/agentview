@@ -98,6 +98,7 @@ pub fn run_codex_turn(job_id: &str, prompt: &str, resume: bool) -> Result<()> {
         job.process_state = ProcessState::Alive;
         job.pid = Some(std::process::id());
         job.active_worker_pid = Some(std::process::id());
+        job.codex_turn_id = None;
         job.completed_at = None;
         job.last_summary = Some(if resume {
             "Resuming Codex thread".to_string()
@@ -198,6 +199,7 @@ pub fn run_codex_turn(job_id: &str, prompt: &str, resume: bool) -> Result<()> {
         job.process_state = ProcessState::Exited;
         job.pid = None;
         job.active_worker_pid = None;
+        job.codex_turn_id = None;
         job.exit_code = Some(exit_code);
         if job.codex_thread_id.is_none() {
             job.codex_thread_id = final_thread_id;
@@ -247,6 +249,7 @@ fn run_codex_app_server_turn_inner(
         job.process_state = ProcessState::Alive;
         job.pid = Some(std::process::id());
         job.active_worker_pid = Some(std::process::id());
+        job.codex_turn_id = None;
         job.completed_at = None;
         job.last_summary = Some(if resume_thread_id.is_some() {
             "Resuming Codex app-server thread".to_string()
@@ -328,12 +331,13 @@ fn handle_runtime_event(job_id: &str, event: RuntimeEvent, latest_text: &mut Str
                 &json!({
                     "type": "app_server_turn_started",
                     "threadId": thread_id,
-                    "turnId": turn_id,
+                    "turnId": turn_id.clone(),
                     "timestamp": now_iso()
                 }),
             )?;
             update_job(job_id, |job| {
                 job.status = JobStatus::Working;
+                job.codex_turn_id = Some(turn_id);
                 job.last_summary = Some("Codex turn started".to_string());
                 Ok(())
             })?;
@@ -417,6 +421,7 @@ fn handle_app_server_notification(
                 job.process_state = ProcessState::Exited;
                 job.pid = None;
                 job.active_worker_pid = None;
+                job.codex_turn_id = None;
                 job.exit_code = Some(if failed { 1 } else { 0 });
                 job.completed_at = Some(now_iso());
                 job.blocking_request = None;

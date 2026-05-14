@@ -441,6 +441,11 @@ Current checkpoint:
   `thread/start` and `turn/start` instead of `codex exec`.
 - `crates/agentview-codex-runtime` owns app-server process startup,
   `thread/start`, `thread/resume`, `turn/start`, and runtime event delivery.
+- `crates/agentview-codex-runtime` now exposes an incremental
+  `CodexRuntimeSession` API so the upcoming supervisor can hold an app-server
+  session instead of only calling blocking one-shot helpers.
+- App-server-backed jobs persist the active Codex turn id while a turn is
+  running, preparing the stop path for `turn/interrupt`.
 - `agentview reply` / `agentview respawn` on app-server-backed jobs now send
   the follow-up turn through `thread/resume` plus `turn/start`, instead of
   falling back to `codex exec resume`.
@@ -577,8 +582,10 @@ The next implementation work should follow this order.
 1. Complete the app-server-backed turn lifecycle in
    `agentview-codex-runtime`.
    - [x] Add `thread/resume` plus follow-up `turn/start` for `agentview reply`.
-   - Add interrupt/stop support through app-server once the request shape is
-     confirmed.
+   - [x] Confirm and expose the `turn/interrupt` request shape in the app-server
+     client.
+   - Add stop routing through app-server once the supervisor can address a live
+     session.
    - [x] Add fake app-server tests that fail if the app-server path shells out
      to `codex exec` or `codex resume`.
 2. Add the supervisor boundary.

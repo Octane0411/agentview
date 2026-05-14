@@ -543,6 +543,9 @@ fn render_peek(job: Option<&Job>) -> Result<Vec<Line<'static>>> {
     if let Some(thread_id) = &job.codex_thread_id {
         lines.push(Line::from(format!("thread: {thread_id}")));
     }
+    if let Some(turn_id) = &job.codex_turn_id {
+        lines.push(Line::from(format!("turn: {turn_id}")));
+    }
     if let Some(worktree_path) = &job.worktree_path {
         lines.push(Line::from(format!("worktree: {worktree_path}")));
     }

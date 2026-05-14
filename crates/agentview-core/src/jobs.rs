@@ -68,6 +68,7 @@ pub fn dispatch_job(prompt: &str, options: DispatchOptions) -> Result<Job> {
         provider: "codex".to_string(),
         backend,
         codex_thread_id: None,
+        codex_turn_id: None,
         title,
         initial_prompt: parsed.prompt.clone(),
         repo_root: worktree.repo_root.to_string_lossy().to_string(),
@@ -217,6 +218,7 @@ pub fn stop_job(job_id: &str) -> Result<()> {
         job.process_state = ProcessState::Exited;
         job.pid = None;
         job.active_worker_pid = None;
+        job.codex_turn_id = None;
         job.completed_at = Some(now_iso());
         job.last_summary = Some("stopped".to_string());
         Ok(())
@@ -243,6 +245,7 @@ pub fn remove_job(job_id: &str, options: RemoveOptions) -> Result<()> {
         job.process_state = ProcessState::Exited;
         job.pid = None;
         job.active_worker_pid = None;
+        job.codex_turn_id = None;
         job.last_summary = Some("deleted".to_string());
         Ok(())
     })?;
