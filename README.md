@@ -60,10 +60,11 @@ agentview doctor
 - `Space`: peek selected session; when peek is open, typed input replies to that session
 - `Shift+Up` / `Shift+Down`: reorder selected session within its group
 - `Ctrl+X`: stop selected session; press again within two seconds to delete
+- `Ctrl+R`: rename selected session
 - `Ctrl+T`: pin/unpin
 - `Ctrl+S`: switch grouping between state and directory; the choice persists
 - `?`: help
-- `Esc`: close panels or exit
+- `Esc`: close panels, cancel rename, clear input, or exit
 
 ## Local State
 

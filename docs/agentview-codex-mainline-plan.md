@@ -249,6 +249,8 @@ Current checkpoint:
   new task.
 - `Shift+Up` / `Shift+Down` reorders the selected session within its visible
   group and persists the order in `Job.manualOrder`.
+- `Ctrl+R` starts inline rename mode for the selected session; `Enter` saves
+  the AgentView-owned title and `Esc` cancels without touching Codex state.
 
 Acceptance:
 

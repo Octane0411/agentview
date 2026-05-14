@@ -94,6 +94,7 @@ struct App {
     message: String,
     peek: bool,
     help: bool,
+    renaming: Option<String>,
     group_by: GroupBy,
     collapsed_groups: HashSet<String>,
     last_delete: Option<LastDelete>,
@@ -110,6 +111,7 @@ impl Default for App {
             message: String::new(),
             peek: false,
             help: false,
+            renaming: None,
             group_by: GroupBy::State,
             collapsed_groups: HashSet::new(),
             last_delete: None,
@@ -301,9 +303,10 @@ impl App {
             KeyEvent {
                 code: KeyCode::Esc, ..
             } => {
-                if self.help || self.peek || !self.input.is_empty() {
+                if self.help || self.peek || self.renaming.is_some() || !self.input.is_empty() {
                     self.help = false;
                     self.peek = false;
+                    self.renaming = None;
                     self.input.clear();
                 } else {
                     return Ok(true);
@@ -344,6 +347,13 @@ impl App {
                 modifiers,
                 ..
             } if modifiers.contains(KeyModifiers::CONTROL) => self.toggle_pin()?,
+            KeyEvent {
+                code: KeyCode::Char('r'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.start_rename();
+            }
             KeyEvent {
                 code: KeyCode::Char('s'),
                 modifiers,
@@ -467,6 +477,19 @@ impl App {
         let text = self.input.trim().to_string();
         self.input.clear();
         let selected = self.selected_job();
+
+        if let Some(job_id) = self.renaming.take() {
+            if text.is_empty() {
+                self.message = "rename cancelled".to_string();
+                return Ok(false);
+            }
+            match rename_job(&job_id, &text) {
+                Ok(()) => self.message = format!("renamed {job_id}"),
+                Err(error) => self.message = error.to_string(),
+            }
+            self.refresh()?;
+            return Ok(false);
+        }
 
         if let Some(rest) = text.strip_prefix("/rename ") {
             if let Some(job) = selected {
@@ -600,6 +623,19 @@ impl App {
         Ok(())
     }
 
+    fn start_rename(&mut self) -> bool {
+        let Some(job) = self.selected_job() else {
+            self.message = "select a session to rename".to_string();
+            return false;
+        };
+        self.input = job.title.clone();
+        self.renaming = Some(job.id.clone());
+        self.peek = false;
+        self.help = false;
+        self.message = format!("renaming {}", job.id);
+        true
+    }
+
     fn draw(&mut self, terminal: &mut Term) -> Result<()> {
         let selected = self.selected_job();
         let peek_lines = if self.help {
@@ -614,7 +650,9 @@ impl App {
         let selected_index = self.selected;
         let input = self.input.clone();
         let message = self.message.clone();
-        let prompt = if self.peek && selected.is_some() {
+        let prompt = if self.renaming.is_some() {
+            "rename selected session"
+        } else if self.peek && selected.is_some() {
             "reply"
         } else {
             "describe a task for a new session"
@@ -692,7 +730,7 @@ impl App {
             frame.render_widget(input_widget, chunks[3]);
 
             frame.render_widget(
-                Paragraph::new("enter open/send/fold . space reply . shift+up/down reorder . ctrl+x stop/delete . ctrl+s group . ctrl+t pin . ? help"),
+                Paragraph::new("enter open/send/fold . space reply . ctrl+r rename . shift+up/down reorder . ctrl+x stop/delete . ctrl+s group . ctrl+t pin . ? help"),
                 chunks[4],
             );
         })?;
@@ -772,9 +810,9 @@ fn render_help() -> Vec<Line<'static>> {
         "Shortcuts",
         "up/down select . enter open or send . space peek/reply . right attach",
         "shift+up/down reorder within group . ctrl+x stop, press again to delete",
-        "ctrl+t pin . ctrl+s group by state/directory",
+        "ctrl+r rename . ctrl+t pin . ctrl+s group by state/directory",
         "type a prompt to dispatch . with peek open, typed text replies to selected session",
-        "type /rename <title> while a row is selected to rename it . esc exits",
+        "esc exits, closes panels, cancels rename, or clears input",
     ]
     .into_iter()
     .map(Line::from)
@@ -1011,6 +1049,39 @@ mod tests {
         app.selected = 0;
 
         assert!(app.swap_selected_job_within_group(1).is_none());
+    }
+
+    #[test]
+    fn ctrl_r_starts_rename_for_selected_job() {
+        let mut app = App {
+            jobs: vec![job("first", JobStatus::Working, false, false)],
+            peek: true,
+            help: true,
+            ..Default::default()
+        };
+        app.build_rows();
+        app.selected = 1;
+
+        assert!(app.start_rename());
+        assert_eq!(app.renaming.as_deref(), Some("first"));
+        assert_eq!(app.input, "first");
+        assert!(!app.peek);
+        assert!(!app.help);
+    }
+
+    #[test]
+    fn ctrl_r_ignores_group_headers() {
+        let mut app = App {
+            jobs: vec![job("first", JobStatus::Working, false, false)],
+            ..Default::default()
+        };
+        app.build_rows();
+        app.selected = 0;
+
+        assert!(!app.start_rename());
+        assert!(app.renaming.is_none());
+        assert_eq!(app.input, "");
+        assert_eq!(app.message, "select a session to rename");
     }
 
     fn job(id: &str, status: JobStatus, pinned: bool, pr: bool) -> Job {
