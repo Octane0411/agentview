@@ -1,10 +1,13 @@
 use crate::schema::{Job, JobBackend, JobStatus, ProcessState};
 use crate::store::{append_job_event, put_job, remove_job_files, require_job, update_job};
-use crate::supervisor::{supervisor_start_app_server_turn, supervisor_stop_app_server_turn};
+use crate::supervisor::{
+    supervisor_resolve_server_request, supervisor_start_app_server_turn,
+    supervisor_stop_app_server_turn,
+};
 use crate::util::{command_exists, extract_pr_refs, make_job_id, now_iso, title_from_prompt};
 use crate::worktree::{create_worktree, remove_worktree, worktree_has_changes};
 use anyhow::{Context, Result, bail};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -148,9 +151,7 @@ pub fn reply_to_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
     let job = require_job(job_id)?;
     if job.process_state == ProcessState::Alive {
         match job.backend {
-            JobBackend::AppServer => bail!(
-                "Live replies to a running app-server job are not wired yet. Wait for this turn to finish, or stop it and reply after completion."
-            ),
+            JobBackend::AppServer => return reply_to_running_app_server_job(&job, prompt),
             JobBackend::FallbackExec => bail!(
                 "Live replies to a running Codex exec session require the app-server backend. Wait for this turn to finish, or stop it and resume."
             ),
@@ -174,6 +175,151 @@ pub fn reply_to_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
         Ok(())
     })?;
     Ok(Some(pid))
+}
+
+fn reply_to_running_app_server_job(job: &Job, prompt: &str) -> Result<Option<u32>> {
+    let blocking_request = job.blocking_request.as_ref().with_context(|| {
+        format!(
+            "Job {} is still running and has no pending request. Enter the session to continue the live conversation.",
+            job.id
+        )
+    })?;
+    let event = blocking_request.event.as_ref().with_context(|| {
+        format!(
+            "Job {} has a pending request without structured event metadata. Enter the session to answer it.",
+            job.id
+        )
+    })?;
+    let request_id = event
+        .get("id")
+        .cloned()
+        .with_context(|| format!("Job {} pending request has no id", job.id))?;
+    let method = event
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or(&blocking_request.kind);
+    let params = event.get("params").cloned().unwrap_or(Value::Null);
+    let result = server_request_response(method, &params, prompt)?;
+    supervisor_resolve_server_request(&job.id, request_id.clone(), result.clone())?;
+    append_job_event(
+        &job.id,
+        &json!({
+            "type": "agentview_server_request_reply_sent",
+            "requestId": request_id,
+            "method": method,
+            "result": result,
+            "timestamp": now_iso()
+        }),
+    )?;
+    update_job(&job.id, |job| {
+        job.status = JobStatus::Working;
+        job.last_summary = Some("reply sent".to_string());
+        job.blocking_request = None;
+        Ok(())
+    })?;
+    Ok(None)
+}
+
+fn server_request_response(method: &str, params: &Value, prompt: &str) -> Result<Value> {
+    match method {
+        "item/tool/requestUserInput" => user_input_response(params, prompt),
+        "item/commandExecution/requestApproval" => {
+            Ok(json!({ "decision": v2_approval_decision(prompt)? }))
+        }
+        "item/fileChange/requestApproval" => {
+            Ok(json!({ "decision": v2_approval_decision(prompt)? }))
+        }
+        "item/permissions/requestApproval" => permissions_response(params, prompt),
+        "applyPatchApproval" | "execCommandApproval" => {
+            Ok(json!({ "decision": v1_review_decision(prompt)? }))
+        }
+        _ => bail!(
+            "Pending Codex request `{method}` is not supported from the AgentView list yet. Enter the session to answer it."
+        ),
+    }
+}
+
+fn user_input_response(params: &Value, prompt: &str) -> Result<Value> {
+    let answer = prompt.trim();
+    if answer.is_empty() {
+        bail!("Reply is empty");
+    }
+    let questions = params
+        .get("questions")
+        .and_then(Value::as_array)
+        .context("request-user-input params are missing questions")?;
+    if questions.is_empty() {
+        bail!("request-user-input has no questions");
+    }
+    let mut answers = serde_json::Map::new();
+    for question in questions {
+        let id = question
+            .get("id")
+            .and_then(Value::as_str)
+            .context("request-user-input question is missing id")?;
+        answers.insert(id.to_string(), json!({ "answers": [answer] }));
+    }
+    Ok(json!({ "answers": answers }))
+}
+
+fn permissions_response(params: &Value, prompt: &str) -> Result<Value> {
+    if is_approve_text(prompt) {
+        let permissions = params
+            .get("permissions")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        return Ok(json!({
+            "permissions": permissions,
+            "scope": "turn",
+        }));
+    }
+    if is_decline_text(prompt) {
+        return Ok(json!({
+            "permissions": {},
+            "scope": "turn",
+        }));
+    }
+    bail!(
+        "Permission requests require `agentview approve <job_id>` or `agentview decline <job_id>`"
+    )
+}
+
+fn v2_approval_decision(prompt: &str) -> Result<&'static str> {
+    if is_approve_text(prompt) {
+        return Ok("accept");
+    }
+    if is_decline_text(prompt) {
+        return Ok("decline");
+    }
+    bail!("Approval requests require `agentview approve <job_id>` or `agentview decline <job_id>`")
+}
+
+fn v1_review_decision(prompt: &str) -> Result<&'static str> {
+    if is_approve_text(prompt) {
+        return Ok("approved");
+    }
+    if is_decline_text(prompt) {
+        return Ok("denied");
+    }
+    bail!("Approval requests require `agentview approve <job_id>` or `agentview decline <job_id>`")
+}
+
+fn is_approve_text(prompt: &str) -> bool {
+    matches!(
+        normalize_decision_text(prompt).as_str(),
+        "approve" | "approved" | "accept" | "accepted" | "yes" | "y"
+    )
+}
+
+fn is_decline_text(prompt: &str) -> bool {
+    matches!(
+        normalize_decision_text(prompt).as_str(),
+        "decline" | "declined" | "deny" | "denied" | "reject" | "rejected" | "no" | "n"
+    )
+}
+
+fn normalize_decision_text(prompt: &str) -> String {
+    prompt.trim().to_ascii_lowercase()
 }
 
 pub fn respawn_job(job_id: &str, prompt: &str) -> Result<Option<u32>> {
@@ -408,6 +554,84 @@ mod tests {
         assert_eq!(
             DispatchOptions::default().backend,
             DispatchBackend::AppServer
+        );
+    }
+
+    #[test]
+    fn request_user_input_response_answers_each_question() {
+        let response = server_request_response(
+            "item/tool/requestUserInput",
+            &json!({
+                "questions": [
+                    { "id": "confirm_path", "header": "Confirm", "question": "Use this path?" },
+                    { "id": "reason", "header": "Reason", "question": "Why?" }
+                ]
+            }),
+            "yes",
+        )
+        .unwrap();
+
+        assert_eq!(
+            response,
+            json!({
+                "answers": {
+                    "confirm_path": { "answers": ["yes"] },
+                    "reason": { "answers": ["yes"] }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn approval_responses_use_codex_protocol_decisions() {
+        assert_eq!(
+            server_request_response(
+                "item/commandExecution/requestApproval",
+                &json!({}),
+                "approved"
+            )
+            .unwrap(),
+            json!({ "decision": "accept" })
+        );
+        assert_eq!(
+            server_request_response("item/fileChange/requestApproval", &json!({}), "declined")
+                .unwrap(),
+            json!({ "decision": "decline" })
+        );
+        assert_eq!(
+            server_request_response("execCommandApproval", &json!({}), "approved").unwrap(),
+            json!({ "decision": "approved" })
+        );
+        assert_eq!(
+            server_request_response("applyPatchApproval", &json!({}), "declined").unwrap(),
+            json!({ "decision": "denied" })
+        );
+    }
+
+    #[test]
+    fn permissions_response_grants_or_denies_requested_profile() {
+        let params = json!({
+            "permissions": {
+                "network": { "enabled": true },
+                "fileSystem": { "read": ["/tmp/read"], "write": ["/tmp/write"] }
+            }
+        });
+
+        assert_eq!(
+            server_request_response("item/permissions/requestApproval", &params, "approve")
+                .unwrap(),
+            json!({
+                "permissions": {
+                    "network": { "enabled": true },
+                    "fileSystem": { "read": ["/tmp/read"], "write": ["/tmp/write"] }
+                },
+                "scope": "turn"
+            })
+        );
+        assert_eq!(
+            server_request_response("item/permissions/requestApproval", &params, "decline")
+                .unwrap(),
+            json!({ "permissions": {}, "scope": "turn" })
         );
     }
 }

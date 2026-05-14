@@ -340,6 +340,13 @@ impl AppServerClient {
         Ok(())
     }
 
+    pub fn resolve_server_request(&mut self, request_id: &Value, result: Value) -> Result<()> {
+        self.write_json(&json!({
+            "id": request_id,
+            "result": result,
+        }))
+    }
+
     pub fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         self.request_with_timeout(method, params, DEFAULT_REQUEST_TIMEOUT)
     }

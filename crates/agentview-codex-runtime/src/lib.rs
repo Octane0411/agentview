@@ -3,6 +3,7 @@ use agentview_codex_app_server::{
 };
 pub use agentview_codex_app_server::{Notification, ServerRequest};
 use anyhow::Result;
+use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -225,6 +226,10 @@ impl CodexRuntimeSession {
 
     pub fn interrupt_turn(&mut self, thread_id: &str, turn_id: &str) -> Result<()> {
         self.client.interrupt_turn(thread_id, turn_id)
+    }
+
+    pub fn resolve_server_request(&mut self, request_id: &Value, result: Value) -> Result<()> {
+        self.client.resolve_server_request(request_id, result)
     }
 
     pub fn next_event(&mut self) -> Result<Option<RuntimeEvent>> {

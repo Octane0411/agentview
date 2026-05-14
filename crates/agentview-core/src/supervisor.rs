@@ -5,6 +5,7 @@ use crate::util::now_iso;
 use agentview_codex_runtime::{CodexRuntime, RuntimeEvent, RuntimeTurnOptions};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
@@ -31,6 +32,11 @@ enum SupervisorRequest {
     },
     StopAppServerTurn {
         job_id: String,
+    },
+    ResolveServerRequest {
+        job_id: String,
+        request_id: Value,
+        result: Value,
     },
     AppServerEndpoint {
         job_id: String,
@@ -64,9 +70,10 @@ struct RunningSession {
     app_server_url: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum RunningCommand {
     Interrupt,
+    ResolveServerRequest { request_id: Value, result: Value },
 }
 
 pub fn supervisor_socket_path() -> PathBuf {
@@ -293,6 +300,33 @@ pub fn supervisor_stop_app_server_turn(_job_id: &str) -> Result<()> {
 }
 
 #[cfg(unix)]
+pub fn supervisor_resolve_server_request(
+    job_id: &str,
+    request_id: Value,
+    result: Value,
+) -> Result<()> {
+    let _ = send_supervisor_request(
+        &serde_json::json!({
+            "type": "resolve_server_request",
+            "job_id": job_id,
+            "request_id": request_id,
+            "result": result,
+        }),
+        Duration::from_secs(2),
+    )?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn supervisor_resolve_server_request(
+    _job_id: &str,
+    _request_id: Value,
+    _result: Value,
+) -> Result<()> {
+    bail!("AgentView supervisor IPC currently requires Unix domain sockets")
+}
+
+#[cfg(unix)]
 pub fn supervisor_app_server_endpoint(job_id: &str) -> Result<Option<String>> {
     match send_supervisor_request(
         &serde_json::json!({
@@ -371,6 +405,27 @@ fn handle_stream(
                 Ok(()) => SupervisorResponse {
                     ok: true,
                     message: "interrupt_sent".to_string(),
+                    pid: Some(std::process::id()),
+                    app_server_url: None,
+                },
+                Err(error) => SupervisorResponse {
+                    ok: false,
+                    message: error.to_string(),
+                    pid: Some(std::process::id()),
+                    app_server_url: None,
+                },
+            };
+            (response, SupervisorAction::Continue)
+        }
+        Ok(SupervisorRequest::ResolveServerRequest {
+            job_id,
+            request_id,
+            result,
+        }) => {
+            let response = match resolve_server_request(state, &job_id, request_id, result) {
+                Ok(()) => SupervisorResponse {
+                    ok: true,
+                    message: "resolve_sent".to_string(),
                     pid: Some(std::process::id()),
                     app_server_url: None,
                 },
@@ -495,6 +550,46 @@ fn stop_app_server_turn(state: &SupervisorState, job_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn resolve_server_request(
+    state: &SupervisorState,
+    job_id: &str,
+    request_id: Value,
+    result: Value,
+) -> Result<()> {
+    let command_tx = {
+        let running = state
+            .running
+            .lock()
+            .map_err(|_| anyhow::anyhow!("supervisor running map is poisoned"))?;
+        running
+            .get(job_id)
+            .map(|session| session.command_tx.clone())
+            .with_context(|| format!("Job {job_id} is not running under this supervisor"))?
+    };
+    command_tx
+        .send(RunningCommand::ResolveServerRequest {
+            request_id: request_id.clone(),
+            result: result.clone(),
+        })
+        .context("failed to send server request response to running turn")?;
+    append_job_event(
+        job_id,
+        &serde_json::json!({
+            "type": "supervisor_server_request_resolve_requested",
+            "requestId": request_id,
+            "result": result,
+            "timestamp": now_iso()
+        }),
+    )?;
+    update_job(job_id, |job| {
+        job.status = JobStatus::Working;
+        job.last_summary = Some("reply sent".to_string());
+        job.blocking_request = None;
+        Ok(())
+    })?;
+    Ok(())
+}
+
 fn run_app_server_turn(
     job_id: &str,
     prompt: &str,
@@ -589,6 +684,18 @@ fn run_app_server_turn(
                     )?;
                 }
                 RunningCommand::Interrupt => {}
+                RunningCommand::ResolveServerRequest { request_id, result } => {
+                    session.resolve_server_request(&request_id, result.clone())?;
+                    append_job_event(
+                        job_id,
+                        &serde_json::json!({
+                            "type": "supervisor_server_request_resolved",
+                            "requestId": request_id,
+                            "result": result,
+                            "timestamp": now_iso()
+                        }),
+                    )?;
+                }
             }
         }
 

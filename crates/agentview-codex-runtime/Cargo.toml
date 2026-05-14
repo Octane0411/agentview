@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 agentview-codex-app-server.workspace = true
 anyhow.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

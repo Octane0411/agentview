@@ -10,6 +10,247 @@ decisions. The product goal is not to wrap `codex resume`; it is to make
 AgentView the session controller and reuse Codex source for the native session
 view.
 
+## Plan V2 Summary
+
+The current architecture decision is:
+
+```text
+AgentView owns orchestration.
+Codex app-server owns execution.
+Codex TUI source owns the attached session UI.
+AgentView patch queue exposes the small hosted-session seam between them.
+```
+
+This is the minimum chain that can match Claude Agent View behavior without
+reimplementing Codex's session UI:
+
+```text
+agentview
+  -> list TUI / job store / supervisor
+  -> supervisor starts Codex app-server on local websocket
+  -> Codex app-server runs Codex thread + turn
+  -> AgentView list renders job state from structured app-server events
+
+Enter selected job
+  -> AgentView resolves job id to Codex thread id + app-server URL
+  -> AgentView starts the patched Codex hosted helper
+  -> helper is built from third_party/codex + patches/codex
+  -> helper opens the same Codex thread through Codex TUI
+  -> Left Arrow returns Detached to AgentView
+  -> supervisor and active Codex turn keep running
+```
+
+The long-term target is the same chain without the helper process:
+
+```text
+agentview-tui
+  -> agentview-codex-hosted
+  -> codex_tui::hosted::run_hosted_session_view(...)
+  -> same AgentView-owned app-server thread
+```
+
+The helper process is an MVP transport detail. The product contract is that
+AgentView never uses `codex resume` for the normal attach path.
+
+## How AgentView Is Layered Over Codex Source
+
+AgentView does not fork Codex into its own implementation. It layers over
+Codex source in four explicit layers:
+
+1. Upstream source pin.
+   `third_party/codex` is a git submodule pinned to a known upstream Codex
+   tag/commit. The current pin is:
+
+   ```text
+   tag: rust-v0.130.0
+   commit: 58573da43ab697e8b79f152c53df4b42230395a8
+   ```
+
+2. Patch queue.
+   `patches/codex/*.patch` is the only place where AgentView changes Codex
+   source. These patches must stay small and product-neutral. They expose a
+   generic hosted-session mode, detach exit reason, and helper binary; they do
+   not change Codex model behavior, transcript semantics, tool semantics, or
+   approval semantics.
+
+3. Patched build copy.
+   `tools/build-codex-hosted-helper.sh` never edits the submodule in place. It
+   archives `third_party/codex`, applies `patches/codex` into
+   `target/agentview-codex-patched/codex`, builds Codex's `codex-tui` package
+   with the added `agentview-codex-hosted` binary, then copies the helper to
+   `target/debug/agentview-codex-hosted`.
+
+4. AgentView adapter crates.
+   Only adapter crates may know about Codex internals:
+
+   - `agentview-codex-app-server`: current JSON-RPC/app-server transport.
+   - `agentview-codex-runtime`: supervisor-facing Codex runtime API.
+   - `agentview-codex-hosted`: hosted session contract and helper invocation.
+
+   `agentview-core`, `agentview-tui`, and `agentview-cli` talk to these
+   adapters. They must not import random Codex internals directly.
+
+In other words, AgentView "sits on top of" Codex by pinning upstream source,
+rebasing a tiny hosted-mode patch queue, and calling that hosted seam through
+adapter crates. AgentView owns session list/product behavior; Codex owns the
+actual conversation, transcript, command rendering, approvals, diffs, and
+composer.
+
+## Current MVP Source Chain
+
+The source and process chain today is:
+
+```text
+Runtime:
+  installed codex CLI
+    -> codex app-server --listen ws://127.0.0.1:<port>
+    -> AgentView supervisor talks JSON-RPC to that endpoint
+
+Attached UI:
+  third_party/codex @ rust-v0.130.0
+    -> patches/codex/*.patch
+    -> target/agentview-codex-patched/codex
+    -> cargo build -p codex-tui --bin agentview-codex-hosted
+    -> target/debug/agentview-codex-hosted
+    -> helper connects to the supervisor app-server URL
+    -> helper renders the selected Codex thread with Codex TUI code
+```
+
+This means the MVP uses the installed `codex` binary for runtime execution and
+the pinned Codex source tree for the attached native UI helper. The next cleanup
+is to move more runtime protocol code from hand-written JSON into Codex's
+`app-server-protocol` / `app-server-client` crates, but the current split is
+intentional: it keeps live execution on the same CLI the user has installed
+while giving us a controlled, pinned Codex TUI source seam for AgentView attach.
+
+## Execution Plan From Here
+
+### Milestone 1: Complete The App-Server Control Loop
+
+Goal: the AgentView list can control a live Codex app-server turn without
+falling back to `codex resume`.
+
+Tasks:
+
+1. [x] Add a supervisor command for resolving Codex server requests.
+2. [x] Add app-server client support for sending JSON-RPC responses to Codex
+   server requests.
+3. [x] Map Codex request-user-input and approval requests into AgentView
+   `needs_input` rows.
+4. [x] Make `agentview reply`, TUI reply, and `agentview approve/decline` answer
+   the active Codex server request when the job is alive.
+5. [x] Keep full approval UX available by entering the hosted Codex session.
+
+Acceptance:
+
+- A live job can move from `working` to `needs_input` from structured Codex
+  events.
+- Replying from AgentView clears the pending request and the same turn
+  continues.
+- No `codex resume` process is started for this path.
+
+Current checkpoint:
+
+- `agentview-codex-app-server` can send JSON-RPC responses to Codex
+  server-request ids.
+- `agentview-codex-runtime` exposes `resolve_server_request`.
+- Supervisor IPC supports `resolve_server_request` and forwards it to the live
+  app-server session command channel.
+- `agentview reply` answers `item/tool/requestUserInput` by mapping every Codex
+  question id to the supplied text.
+- `agentview approve` / `agentview decline` answer v2 command/file approval
+  requests with `accept` / `decline` and v1 approval requests with
+  `approved` / `denied`.
+- `item/permissions/requestApproval` can grant the requested profile for a
+  turn, or deny by returning an empty permission profile.
+- Fake app-server integration tests cover live request-user-input reply and
+  live command approval from the list.
+
+### Milestone 2: Harden The Hosted Codex TUI Wrapper
+
+Goal: entering a row is consistently equivalent to entering a native Codex
+session, with AgentView-owned detach.
+
+Tasks:
+
+1. Keep the Codex patch queue limited to hosted-session seams:
+   detach result, hosted config, direct thread open, helper binary.
+2. Make helper resolution deterministic in development and packaged builds.
+3. Keep the helper connected to the supervisor-owned websocket app-server
+   endpoint.
+4. Expand PTY E2E to cover attach during `needs_input`, detach after an answer,
+   and re-enter after completion.
+5. Document every Codex version bump with patch-check, helper-build, unit-test,
+   and real-Codex E2E results.
+
+Acceptance:
+
+- `agentview` Enter opens the selected Codex thread, not a separate resume
+  session.
+- Left Arrow returns to the list without writing interruption markers into the
+  Codex conversation.
+- Re-entering shows the same thread and current turn state.
+
+### Milestone 3: Replace Hand-Written Protocol Where It Matters
+
+Goal: reduce drift against Codex app-server protocol while preserving a narrow
+AgentView adapter boundary.
+
+Tasks:
+
+1. Evaluate path-depending on Codex `app-server-protocol` and
+   `app-server-client` from `third_party/codex`.
+2. Move request/response structs and server-request response shapes to Codex
+   protocol types where the dependency graph is stable.
+3. Keep all Codex protocol imports inside `agentview-codex-app-server` and
+   `agentview-codex-runtime`.
+4. Keep fallback hand-written JSON only for protocol gaps or tests.
+
+Acceptance:
+
+- Approval/request-user-input response payloads are derived from Codex protocol
+  types or verified upstream test fixtures.
+- Updating Codex source breaks adapter tests before it can break AgentView UI
+  behavior silently.
+
+### Milestone 4: Close Claude Agent View Parity Gaps
+
+Goal: match `docs/codex-agent-view-spec.md` for the Codex-only MVP.
+
+Tasks:
+
+1. Worktree isolation and dirty-worktree safe removal.
+2. Correct grouping/order for working, needs input, completed, failed, stopped,
+   and ready-for-review.
+3. Peek panel content from structured latest output and pending request
+   metadata.
+4. Stop/delete/respawn flows through supervisor and Codex app-server.
+5. PR status extraction once the session opens PRs.
+
+Acceptance:
+
+- The product behavior matches the spec at the user-visible layer.
+- Remaining differences are explicitly documented as Codex-provider limits, not
+  hidden implementation shortcuts.
+
+### Milestone 5: Remove The Helper Process When Codex Allows It
+
+Goal: make the hosted Codex session a library call inside AgentView.
+
+Tasks:
+
+1. Keep the current helper API shaped like the future library API.
+2. Continue pushing Codex patches toward generic hosted TUI extension points.
+3. Replace helper spawning with `codex_tui::hosted::run_hosted_session_view(...)`
+   when terminal ownership and dependency constraints are clean enough.
+4. Keep the same detach result and app-server ownership semantics.
+
+Acceptance:
+
+- Removing the helper does not change user-visible behavior.
+- The Codex patch queue remains small enough to rebase with each upstream
+  update.
+
 ## Non-Negotiable Mainline
 
 The normal user-visible flow must become:
@@ -116,10 +357,9 @@ Already implemented:
 
 Still missing from the normal path:
 
-- Live reply to a running app-server turn is not wired yet.
 - Helper packaging/version-update workflow is still manual.
 - List TUI PTY automation covers the core enter/detach/re-enter path, but still
-  does not cover dirty worktree removal or list-level needs-input decisions.
+  does not cover dirty worktree removal or hosted attach during `needs_input`.
 - Direct library-hosted Codex TUI remains the preferred long-term shape; the
   current MVP uses the helper-process bridge.
 
@@ -621,7 +861,8 @@ Current checkpoint:
 - `agentview stop` on a running app-server-backed job routes through supervisor
   IPC and sends Codex `turn/interrupt` instead of killing the supervisor
   process.
-- Live reply to an already running app-server turn is still pending.
+- `agentview reply` / `agentview approve` / `agentview decline` can resolve
+  structured Codex server requests on already running app-server turns.
 
 ### Phase 4: Hosted Codex Source Spike
 
@@ -677,10 +918,10 @@ Current checkpoint:
   selected running row, detach with Left Arrow, verify the outer list refreshed,
   verify the same turn is still running, re-enter and detach again, reject
   `conversation interrupted` / `hosted_attach_quit` markers, then wait for the
-  marker response. Verified on 2026-05-14 with job `av_mp5afgox_18z5`, thread
-  `019e25d2-9137-78f1-9a6a-285ee1bb3a44`, turn
-  `019e25d2-917b-7922-ab3c-f39327424aee`, marker
-  `AGENTVIEW_HOSTED_DETACH_E2E_1778751016_OK`.
+  marker response. Verified on 2026-05-14 with job `av_mp5b06kh_1aqm`, thread
+  `019e25e1-5115-7833-aa10-e01131070d36`, turn
+  `019e25e1-5159-7703-8987-997261444ced`, marker
+  `AGENTVIEW_HOSTED_DETACH_E2E_1778751983_OK`.
 - The full list TUI path was manually verified on 2026-05-14 with job
   `av_mp59omyw_16cy`: pressing Enter from `agentview` opened the hosted Codex
   UI, Left Arrow emitted `hosted_attach_detached`, the same turn continued, and
@@ -809,15 +1050,14 @@ Regression tests:
 
 The next implementation work should follow this order:
 
-1. Wire live reply/approval for already running app-server turns.
-   - `needs_input` rows should expose list-level reply/approval where possible.
-   - Entering the hosted Codex view remains the canonical full-session approval
-     path.
+1. Expand hosted-view and PTY coverage around `needs_input`.
+   - Attach while a row is in `needs_input`.
+   - Answer from either AgentView list or hosted Codex view.
+   - Detach/re-enter after the request is resolved.
 2. Formalize helper packaging and Codex update flow.
    - Keep `tools/check-codex-patches.sh` and `tools/build-codex-hosted-helper.sh`
      as the required checks when bumping `third_party/codex`.
    - Document the tested Codex CLI/source version after every bump.
 3. Then fill the remaining parity gaps.
-   - Live reply/approval while a turn is in `needs_input`.
    - Dirty worktree cleanup protection.
    - Completed/failed grouping and PR status extraction.

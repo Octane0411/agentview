@@ -305,6 +305,176 @@ fn app_server_stop_routes_turn_interrupt_through_supervisor() {
 }
 
 #[test]
+fn running_app_server_request_can_be_answered_from_list() {
+    let env = TestEnv::new();
+    let repo = env.git_repo();
+    let codex = env.fake_input_app_server_codex();
+    let store = TempDir::new().unwrap();
+
+    let output = env
+        .agentview(&store, &codex)
+        .args([
+            "run",
+            "--cwd",
+            repo.to_str().unwrap(),
+            "ask for confirmation through app-server",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let job_id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("backgrounded"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("job id in run output")
+        .to_string();
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env.agentview(&store, &codex).arg("list").output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains(&job_id) && stdout.contains("needs_input")
+    });
+
+    let peek = env
+        .agentview(&store, &codex)
+        .args(["peek", &job_id])
+        .output()
+        .unwrap();
+    assert!(peek.status.success());
+    let peek_stdout = String::from_utf8_lossy(&peek.stdout);
+    assert!(peek_stdout.contains("needs input: Continue?"));
+
+    let reply = env
+        .agentview(&store, &codex)
+        .args(["reply", &job_id, "yes"])
+        .output()
+        .unwrap();
+    assert!(
+        reply.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reply.stderr)
+    );
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env
+            .agentview(&store, &codex)
+            .args(["peek", &job_id])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains("completed after answer yes") && stdout.contains("completed")
+    });
+
+    let logs = env
+        .agentview(&store, &codex)
+        .args(["logs", &job_id])
+        .output()
+        .unwrap();
+    assert!(logs.status.success());
+    let logs_stdout = String::from_utf8_lossy(&logs.stdout);
+    assert!(logs_stdout.contains("app_server_request"));
+    assert!(logs_stdout.contains("agentview_server_request_reply_sent"));
+    assert!(logs_stdout.contains("supervisor_server_request_resolve_requested"));
+    assert!(logs_stdout.contains("supervisor_server_request_resolved"));
+    assert!(logs_stdout.contains("serverRequest/resolved"));
+
+    let shutdown = env
+        .agentview(&store, &codex)
+        .arg("__supervisor-shutdown")
+        .output()
+        .unwrap();
+    assert!(
+        shutdown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shutdown.stderr)
+    );
+}
+
+#[test]
+fn running_app_server_approval_can_be_accepted_from_list() {
+    let env = TestEnv::new();
+    let repo = env.git_repo();
+    let codex = env.fake_approval_app_server_codex();
+    let store = TempDir::new().unwrap();
+
+    let output = env
+        .agentview(&store, &codex)
+        .args([
+            "run",
+            "--cwd",
+            repo.to_str().unwrap(),
+            "ask for command approval through app-server",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let job_id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("backgrounded"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("job id in run output")
+        .to_string();
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env.agentview(&store, &codex).arg("list").output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains(&job_id) && stdout.contains("needs_input")
+    });
+
+    let approve = env
+        .agentview(&store, &codex)
+        .args(["approve", &job_id])
+        .output()
+        .unwrap();
+    assert!(
+        approve.status.success(),
+        "{}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env
+            .agentview(&store, &codex)
+            .args(["peek", &job_id])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains("command approved from list") && stdout.contains("completed")
+    });
+
+    let logs = env
+        .agentview(&store, &codex)
+        .args(["logs", &job_id])
+        .output()
+        .unwrap();
+    assert!(logs.status.success());
+    let logs_stdout = String::from_utf8_lossy(&logs.stdout);
+    assert!(logs_stdout.contains("item/commandExecution/requestApproval"));
+    assert!(logs_stdout.contains("\"decision\":\"accept\""));
+
+    let shutdown = env
+        .agentview(&store, &codex)
+        .arg("__supervisor-shutdown")
+        .output()
+        .unwrap();
+    assert!(
+        shutdown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shutdown.stderr)
+    );
+}
+
+#[test]
 fn running_app_server_attach_passes_supervisor_websocket_endpoint() {
     let env = TestEnv::new();
     let repo = env.git_repo();
@@ -616,6 +786,136 @@ case "$interrupt" in
 esac
 printf '%s\n' '{{"id":3,"result":{{}}}}'
 printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"{THREAD_ID}","turn":{{"id":"turn-1","status":"interrupted","startedAt":0,"completedAt":1,"durationMs":1}}}}}}'
+"#,
+                codex_home = codex_home.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&codex).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&codex, permissions).unwrap();
+        codex
+    }
+
+    fn fake_input_app_server_codex(&self) -> PathBuf {
+        let bin = self.root.path().join("input-bin");
+        fs::create_dir_all(&bin).unwrap();
+        let codex = bin.join("codex");
+        let codex_home = self.root.path().join("input-codex-home");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::write(
+            &codex,
+            format!(
+                r#"#!/bin/sh
+set -eu
+if [ "${{1:-}}" != "app-server" ] || [ "${{2:-}}" != "--listen" ] || [ "${{3:-}}" != "stdio://" ]; then
+  printf '%s\n' "unexpected args: $*" >&2
+  exit 2
+fi
+cwd="$(pwd)"
+IFS= read -r init
+case "$init" in
+  *'"method":"initialize"'*) ;;
+  *) printf '%s\n' "expected initialize, got: $init" >&2; exit 3 ;;
+esac
+printf '%s\n' '{{"id":0,"result":{{"userAgent":"fake-codex/0.0.0","codexHome":"{codex_home}","platformFamily":"unix","platformOs":"macos"}}}}'
+
+IFS= read -r initialized
+case "$initialized" in
+  *'"method":"initialized"'*) ;;
+  *) printf '%s\n' "expected initialized, got: $initialized" >&2; exit 4 ;;
+esac
+
+IFS= read -r thread_start
+case "$thread_start" in
+  *'"method":"thread/start"'*) ;;
+  *) printf '%s\n' "expected thread/start, got: $thread_start" >&2; exit 5 ;;
+esac
+printf '%s\n' "{{\"method\":\"thread/started\",\"params\":{{\"thread\":{{\"id\":\"{THREAD_ID}\",\"sessionId\":\"{THREAD_ID}\",\"preview\":\"\",\"status\":\"running\",\"cwd\":\"$cwd\",\"name\":null}}}}}}"
+printf '%s\n' "{{\"id\":1,\"result\":{{\"thread\":{{\"id\":\"{THREAD_ID}\",\"sessionId\":\"{THREAD_ID}\",\"preview\":\"\",\"status\":\"running\",\"cwd\":\"$cwd\",\"name\":null}},\"model\":\"fake-model\",\"modelProvider\":\"fake-provider\",\"serviceTier\":null,\"cwd\":\"$cwd\"}}}}"
+
+IFS= read -r turn_start
+case "$turn_start" in
+  *'"method":"turn/start"'*) ;;
+  *) printf '%s\n' "expected turn/start, got: $turn_start" >&2; exit 6 ;;
+esac
+printf '%s\n' '{{"id":2,"result":{{"turn":{{"id":"turn-1","status":"running","startedAt":0,"completedAt":null,"durationMs":null}}}}}}'
+printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"{THREAD_ID}","turn":{{"id":"turn-1","status":"running","startedAt":0,"completedAt":null,"durationMs":null}}}}}}'
+printf '%s\n' '{{"id":"req-1","method":"item/tool/requestUserInput","params":{{"threadId":"{THREAD_ID}","turnId":"turn-1","itemId":"call1","questions":[{{"id":"confirm_path","header":"Confirm","question":"Continue?","isOther":false,"isSecret":false,"options":null}}]}}}}'
+
+IFS= read -r answer
+case "$answer" in
+  *'"id":"req-1"'*'"result"'*'"confirm_path"'*'"answers":["yes"]'*) ;;
+  *) printf '%s\n' "expected request-user-input response, got: $answer" >&2; exit 7 ;;
+esac
+printf '%s\n' '{{"method":"serverRequest/resolved","params":{{"requestId":"req-1"}}}}'
+printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"{THREAD_ID}","turnId":"turn-1","itemId":"item-1","delta":"completed after answer yes"}}}}'
+printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"{THREAD_ID}","turn":{{"id":"turn-1","status":"completed","startedAt":0,"completedAt":1,"durationMs":1}}}}}}'
+"#,
+                codex_home = codex_home.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&codex).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&codex, permissions).unwrap();
+        codex
+    }
+
+    fn fake_approval_app_server_codex(&self) -> PathBuf {
+        let bin = self.root.path().join("approval-bin");
+        fs::create_dir_all(&bin).unwrap();
+        let codex = bin.join("codex");
+        let codex_home = self.root.path().join("approval-codex-home");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::write(
+            &codex,
+            format!(
+                r#"#!/bin/sh
+set -eu
+if [ "${{1:-}}" != "app-server" ] || [ "${{2:-}}" != "--listen" ] || [ "${{3:-}}" != "stdio://" ]; then
+  printf '%s\n' "unexpected args: $*" >&2
+  exit 2
+fi
+cwd="$(pwd)"
+IFS= read -r init
+case "$init" in
+  *'"method":"initialize"'*) ;;
+  *) printf '%s\n' "expected initialize, got: $init" >&2; exit 3 ;;
+esac
+printf '%s\n' '{{"id":0,"result":{{"userAgent":"fake-codex/0.0.0","codexHome":"{codex_home}","platformFamily":"unix","platformOs":"macos"}}}}'
+
+IFS= read -r initialized
+case "$initialized" in
+  *'"method":"initialized"'*) ;;
+  *) printf '%s\n' "expected initialized, got: $initialized" >&2; exit 4 ;;
+esac
+
+IFS= read -r thread_start
+case "$thread_start" in
+  *'"method":"thread/start"'*) ;;
+  *) printf '%s\n' "expected thread/start, got: $thread_start" >&2; exit 5 ;;
+esac
+printf '%s\n' "{{\"method\":\"thread/started\",\"params\":{{\"thread\":{{\"id\":\"{THREAD_ID}\",\"sessionId\":\"{THREAD_ID}\",\"preview\":\"\",\"status\":\"running\",\"cwd\":\"$cwd\",\"name\":null}}}}}}"
+printf '%s\n' "{{\"id\":1,\"result\":{{\"thread\":{{\"id\":\"{THREAD_ID}\",\"sessionId\":\"{THREAD_ID}\",\"preview\":\"\",\"status\":\"running\",\"cwd\":\"$cwd\",\"name\":null}},\"model\":\"fake-model\",\"modelProvider\":\"fake-provider\",\"serviceTier\":null,\"cwd\":\"$cwd\"}}}}"
+
+IFS= read -r turn_start
+case "$turn_start" in
+  *'"method":"turn/start"'*) ;;
+  *) printf '%s\n' "expected turn/start, got: $turn_start" >&2; exit 6 ;;
+esac
+printf '%s\n' '{{"id":2,"result":{{"turn":{{"id":"turn-1","status":"running","startedAt":0,"completedAt":null,"durationMs":null}}}}}}'
+printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"{THREAD_ID}","turn":{{"id":"turn-1","status":"running","startedAt":0,"completedAt":null,"durationMs":null}}}}}}'
+printf '%s\n' '{{"id":"req-approval","method":"item/commandExecution/requestApproval","params":{{"threadId":"{THREAD_ID}","turnId":"turn-1","itemId":"cmd1","startedAtMs":0,"command":"npm test","cwd":"/tmp","availableDecisions":["accept","decline"]}}}}'
+
+IFS= read -r answer
+case "$answer" in
+  *'"id":"req-approval"'*'"result"'*'"decision":"accept"'*) ;;
+  *) printf '%s\n' "expected approval accept response, got: $answer" >&2; exit 7 ;;
+esac
+printf '%s\n' '{{"method":"serverRequest/resolved","params":{{"requestId":"req-approval"}}}}'
+printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"{THREAD_ID}","turnId":"turn-1","itemId":"item-1","delta":"command approved from list"}}}}'
+printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"{THREAD_ID}","turn":{{"id":"turn-1","status":"completed","startedAt":0,"completedAt":1,"durationMs":1}}}}}}'
 "#,
                 codex_home = codex_home.display()
             ),

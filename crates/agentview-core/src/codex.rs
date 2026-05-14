@@ -466,7 +466,8 @@ fn handle_app_server_request(job_id: &str, request: ServerRequest) -> Result<()>
     let id = request.id.clone();
     let method = request.method.clone();
     let params = request.params.clone();
-    let message = format!("needs input: {method}");
+    let message = app_server_request_message(&method, &params);
+    let summary = format!("needs input: {message}");
     append_job_event(
         job_id,
         &json!({
@@ -479,7 +480,7 @@ fn handle_app_server_request(job_id: &str, request: ServerRequest) -> Result<()>
     )?;
     update_job(job_id, |job| {
         job.status = JobStatus::NeedsInput;
-        job.last_summary = Some(message.clone());
+        job.last_summary = Some(summary.clone());
         job.blocking_request = Some(BlockingRequest {
             kind: method.clone(),
             message: message.clone(),
@@ -493,6 +494,58 @@ fn handle_app_server_request(job_id: &str, request: ServerRequest) -> Result<()>
         Ok(())
     })?;
     Ok(())
+}
+
+fn app_server_request_message(method: &str, params: &Value) -> String {
+    match method {
+        "item/tool/requestUserInput" => params
+            .get("questions")
+            .and_then(Value::as_array)
+            .and_then(|questions| questions.first())
+            .and_then(|question| {
+                question
+                    .get("question")
+                    .or_else(|| question.get("header"))
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or("Codex is waiting for input")
+            .to_string(),
+        "item/commandExecution/requestApproval" => params
+            .get("command")
+            .and_then(Value::as_str)
+            .map(|command| format!("approve command: {command}"))
+            .or_else(|| {
+                params
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_else(|| "approve command execution?".to_string()),
+        "item/fileChange/requestApproval" | "applyPatchApproval" => params
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "approve file changes?".to_string()),
+        "item/permissions/requestApproval" => params
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "approve requested permissions?".to_string()),
+        "execCommandApproval" => params
+            .get("command")
+            .and_then(Value::as_array)
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|command| !command.is_empty())
+            .map(|command| format!("approve command: {command}"))
+            .unwrap_or_else(|| "approve command execution?".to_string()),
+        _ => method.to_string(),
+    }
 }
 
 fn app_server_status_label(status: &Value) -> Option<&str> {
