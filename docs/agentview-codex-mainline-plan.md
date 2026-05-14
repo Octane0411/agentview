@@ -165,6 +165,10 @@ Current checkpoint:
   turn, or deny by returning an empty permission profile.
 - Fake app-server integration tests cover live request-user-input reply and
   live command approval from the list.
+- Fake websocket integration coverage also verifies that attaching while a job
+  is already in `needs_input` passes the same supervisor app-server endpoint to
+  the hosted helper, and that the pending request can still be answered from
+  the list afterwards.
 
 ### Milestone 2: Harden The Hosted Codex TUI Wrapper
 
