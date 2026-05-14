@@ -1,12 +1,12 @@
 # Codex App-Server AgentView Plan
 
-Status: active architecture plan
+Status: superseded by `docs/agentview-codex-mainline-plan.md`
 Date: 2026-05-14
 Observed Codex CLI: `codex-cli 0.130.0`
 Observed Codex source tag: `rust-v0.130.0`
 
-This plan supersedes `docs/rust-codex-tui-plan.md` for the next implementation
-phase.
+This plan is kept as the app-server spike history. The active execution plan is
+`docs/agentview-codex-mainline-plan.md`.
 
 ## First Principles
 

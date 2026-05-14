@@ -3,7 +3,7 @@
 Status: superseded for next implementation phase
 Date: 2026-05-13
 
-Superseded by: `docs/codex-app-server-agentview-plan.md`
+Superseded by: `docs/agentview-codex-mainline-plan.md`
 
 This document captured the Rust rewrite and Codex TUI reuse direction. The
 active architecture now treats `codex app-server` as the primary integration
