@@ -49,10 +49,13 @@ impl HostedHelper {
         ];
 
         if let Some(remote_url) = &config.remote_url {
-            args.extend(["--remote-url".to_string(), remote_url.clone()]);
+            args.extend(["--app-server-url".to_string(), remote_url.clone()]);
         }
         if let Some(remote_auth_token) = &config.remote_auth_token {
-            args.extend(["--remote-auth-token".to_string(), remote_auth_token.clone()]);
+            args.extend([
+                "--app-server-auth-token".to_string(),
+                remote_auth_token.clone(),
+            ]);
         }
         if config.no_alt_screen {
             args.push("--no-alt-screen".to_string());
@@ -126,9 +129,9 @@ mod tests {
                 "thread-123",
                 "--cwd",
                 "/tmp/worktree",
-                "--remote-url",
+                "--app-server-url",
                 "ws://127.0.0.1:1234",
-                "--remote-auth-token",
+                "--app-server-auth-token",
                 "token",
                 "--no-alt-screen",
             ]

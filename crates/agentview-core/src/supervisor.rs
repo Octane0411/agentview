@@ -10,6 +10,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
@@ -29,6 +30,9 @@ enum SupervisorRequest {
     StopAppServerTurn {
         job_id: String,
     },
+    AppServerEndpoint {
+        job_id: String,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -37,6 +41,8 @@ struct SupervisorResponse {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pid: Option<u32>,
+    #[serde(rename = "appServerUrl", skip_serializing_if = "Option::is_none")]
+    app_server_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +53,13 @@ enum SupervisorAction {
 
 #[derive(Clone, Default)]
 struct SupervisorState {
-    running: Arc<Mutex<HashMap<String, mpsc::Sender<RunningCommand>>>>,
+    running: Arc<Mutex<HashMap<String, RunningSession>>>,
+}
+
+#[derive(Clone)]
+struct RunningSession {
+    command_tx: mpsc::Sender<RunningCommand>,
+    app_server_url: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -192,6 +204,21 @@ fn read_supervisor_pid() -> Option<u32> {
         .and_then(|text| text.trim().parse().ok())
 }
 
+fn app_server_listen_url() -> Result<String> {
+    if std::env::var("AGENTVIEW_APP_SERVER_TRANSPORT")
+        .map(|value| value == "stdio")
+        .unwrap_or(false)
+    {
+        return Ok("stdio://".to_string());
+    }
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .context("failed to reserve loopback app-server websocket port")?;
+    let addr = listener
+        .local_addr()
+        .context("failed to read reserved app-server websocket port")?;
+    Ok(format!("ws://{addr}"))
+}
+
 #[cfg(unix)]
 fn send_supervisor_request(
     value: &serde_json::Value,
@@ -235,6 +262,33 @@ pub fn supervisor_stop_app_server_turn(_job_id: &str) -> Result<()> {
 }
 
 #[cfg(unix)]
+pub fn supervisor_app_server_endpoint(job_id: &str) -> Result<Option<String>> {
+    match send_supervisor_request(
+        &serde_json::json!({
+            "type": "app_server_endpoint",
+            "job_id": job_id,
+        }),
+        Duration::from_secs(2),
+    ) {
+        Ok(response) => Ok(response.app_server_url),
+        Err(error) => {
+            if error
+                .to_string()
+                .contains("failed to connect to AgentView supervisor")
+            {
+                return Ok(None);
+            }
+            Err(error)
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub fn supervisor_app_server_endpoint(_job_id: &str) -> Result<Option<String>> {
+    Ok(None)
+}
+
+#[cfg(unix)]
 fn handle_stream(
     mut stream: std::os::unix::net::UnixStream,
     state: &SupervisorState,
@@ -247,6 +301,7 @@ fn handle_stream(
                 ok: true,
                 message: "pong".to_string(),
                 pid: Some(std::process::id()),
+                app_server_url: None,
             },
             SupervisorAction::Continue,
         ),
@@ -255,6 +310,7 @@ fn handle_stream(
                 ok: true,
                 message: "shutdown".to_string(),
                 pid: Some(std::process::id()),
+                app_server_url: None,
             },
             SupervisorAction::Shutdown,
         ),
@@ -268,11 +324,13 @@ fn handle_stream(
                     ok: true,
                     message: "started".to_string(),
                     pid: Some(std::process::id()),
+                    app_server_url: None,
                 },
                 Err(error) => SupervisorResponse {
                     ok: false,
                     message: error.to_string(),
                     pid: Some(std::process::id()),
+                    app_server_url: None,
                 },
             };
             (response, SupervisorAction::Continue)
@@ -283,20 +341,44 @@ fn handle_stream(
                     ok: true,
                     message: "interrupt_sent".to_string(),
                     pid: Some(std::process::id()),
+                    app_server_url: None,
                 },
                 Err(error) => SupervisorResponse {
                     ok: false,
                     message: error.to_string(),
                     pid: Some(std::process::id()),
+                    app_server_url: None,
                 },
             };
             (response, SupervisorAction::Continue)
+        }
+        Ok(SupervisorRequest::AppServerEndpoint { job_id }) => {
+            let app_server_url = state
+                .running
+                .lock()
+                .map_err(|_| anyhow::anyhow!("supervisor running map is poisoned"))?
+                .get(&job_id)
+                .map(|session| session.app_server_url.clone());
+            (
+                SupervisorResponse {
+                    ok: true,
+                    message: if app_server_url.is_some() {
+                        "endpoint".to_string()
+                    } else {
+                        "not_running".to_string()
+                    },
+                    pid: Some(std::process::id()),
+                    app_server_url,
+                },
+                SupervisorAction::Continue,
+            )
         }
         Err(error) => (
             SupervisorResponse {
                 ok: false,
                 message: error.to_string(),
                 pid: Some(std::process::id()),
+                app_server_url: None,
             },
             SupervisorAction::Continue,
         ),
@@ -314,6 +396,7 @@ fn start_app_server_turn_thread(
     resume: bool,
 ) -> Result<()> {
     let (sender, receiver) = mpsc::channel();
+    let app_server_url = app_server_listen_url()?;
     {
         let mut running = state
             .running
@@ -322,7 +405,13 @@ fn start_app_server_turn_thread(
         if running.contains_key(&job_id) {
             bail!("Job {job_id} is already running");
         }
-        running.insert(job_id.clone(), sender);
+        running.insert(
+            job_id.clone(),
+            RunningSession {
+                command_tx: sender,
+                app_server_url: app_server_url.clone(),
+            },
+        );
     }
 
     append_job_event(
@@ -330,12 +419,13 @@ fn start_app_server_turn_thread(
         &serde_json::json!({
             "type": "supervisor_app_server_turn_queued",
             "resume": resume,
+            "appServerUrl": app_server_url.clone(),
             "timestamp": now_iso()
         }),
     )?;
     let state = state.clone();
     thread::spawn(move || {
-        let result = run_app_server_turn(&job_id, &prompt, resume, receiver);
+        let result = run_app_server_turn(&job_id, &prompt, resume, receiver, &app_server_url);
         if let Ok(mut running) = state.running.lock() {
             running.remove(&job_id);
         }
@@ -347,17 +437,17 @@ fn start_app_server_turn_thread(
 }
 
 fn stop_app_server_turn(state: &SupervisorState, job_id: &str) -> Result<()> {
-    let sender = {
+    let command_tx = {
         let running = state
             .running
             .lock()
             .map_err(|_| anyhow::anyhow!("supervisor running map is poisoned"))?;
         running
             .get(job_id)
-            .cloned()
+            .map(|session| session.command_tx.clone())
             .with_context(|| format!("Job {job_id} is not running under this supervisor"))?
     };
-    sender
+    command_tx
         .send(RunningCommand::Interrupt)
         .context("failed to send interrupt command to running turn")?;
     append_job_event(
@@ -379,6 +469,7 @@ fn run_app_server_turn(
     prompt: &str,
     resume: bool,
     commands: mpsc::Receiver<RunningCommand>,
+    app_server_url: &str,
 ) -> Result<()> {
     let job = require_job(job_id)?;
     update_job(job_id, |job| {
@@ -404,7 +495,12 @@ fn run_app_server_turn(
         approval_policy: job.approval_policy.clone(),
         sandbox: job.sandbox.clone(),
     };
-    let mut session = CodexRuntime::default().spawn_session()?;
+    let runtime = if app_server_url == "stdio://" {
+        CodexRuntime::default()
+    } else {
+        CodexRuntime::default().with_listen_url(app_server_url)
+    };
+    let mut session = runtime.spawn_session()?;
     let mut latest_text = String::new();
     handle_app_server_runtime_event(job_id, session.initialized_event(), &mut latest_text)?;
 

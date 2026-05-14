@@ -305,6 +305,95 @@ fn app_server_stop_routes_turn_interrupt_through_supervisor() {
 }
 
 #[test]
+fn running_app_server_attach_passes_supervisor_websocket_endpoint() {
+    let env = TestEnv::new();
+    let repo = env.git_repo();
+    let codex = env.fake_websocket_slow_app_server_codex();
+    let store = TempDir::new().unwrap();
+
+    let output = env
+        .agentview_default_transport(&store, &codex)
+        .args([
+            "run",
+            "--cwd",
+            repo.to_str().unwrap(),
+            "start a websocket fake app-server task",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let job_id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("backgrounded"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("job id in run output")
+        .to_string();
+
+    wait_until(Duration::from_secs(5), || {
+        let output = env
+            .agentview_default_transport(&store, &codex)
+            .args(["peek", &job_id])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains("websocket fake app-server running") && stdout.contains("turn: turn-ws-1")
+    });
+
+    let (hosted_helper, hosted_log) = env.fake_hosted_helper();
+    let hosted = env
+        .agentview_default_transport(&store, &codex)
+        .env("AGENTVIEW_CODEX_HOSTED", hosted_helper)
+        .args(["attach", &job_id])
+        .output()
+        .unwrap();
+    assert!(
+        hosted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&hosted.stderr)
+    );
+    let hosted_args = fs::read_to_string(hosted_log).unwrap();
+    assert!(hosted_args.contains(&format!("--thread-id {THREAD_ID}")));
+    assert!(hosted_args.contains("--app-server-url ws://127.0.0.1:"));
+    assert!(!hosted_args.contains("--remote-url"));
+
+    let stop = env
+        .agentview_default_transport(&store, &codex)
+        .args(["stop", &job_id])
+        .output()
+        .unwrap();
+    assert!(
+        stop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    wait_until(Duration::from_secs(5), || {
+        let output = env
+            .agentview_default_transport(&store, &codex)
+            .arg("list")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains(&job_id) && stdout.contains("stopped")
+    });
+
+    let shutdown = env
+        .agentview_default_transport(&store, &codex)
+        .arg("__supervisor-shutdown")
+        .output()
+        .unwrap();
+    assert!(
+        shutdown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shutdown.stderr)
+    );
+}
+
+#[test]
 fn hidden_supervisor_accepts_ping_over_local_socket() {
     let env = TestEnv::new();
     let codex = env.fake_codex();
@@ -362,6 +451,12 @@ impl TestEnv {
     }
 
     fn agentview(&self, store: &TempDir, codex: &Path) -> Command {
+        let mut command = self.agentview_default_transport(store, codex);
+        command.env("AGENTVIEW_APP_SERVER_TRANSPORT", "stdio");
+        command
+    }
+
+    fn agentview_default_transport(&self, store: &TempDir, codex: &Path) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_agentview"));
         let fake_bin = codex.parent().unwrap();
         let path = format!(
@@ -526,6 +621,119 @@ printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"{THREAD_ID}","
             ),
         )
         .unwrap();
+        let mut permissions = fs::metadata(&codex).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&codex, permissions).unwrap();
+        codex
+    }
+
+    fn fake_websocket_slow_app_server_codex(&self) -> PathBuf {
+        let bin = self.root.path().join("ws-slow-bin");
+        fs::create_dir_all(&bin).unwrap();
+        let codex = bin.join("codex");
+        let codex_home = self.root.path().join("ws-slow-codex-home");
+        fs::create_dir_all(&codex_home).unwrap();
+        let script = r#"#!/bin/sh
+set -eu
+if [ "${1:-}" != "app-server" ] || [ "${2:-}" != "--listen" ]; then
+  printf '%s\n' "unexpected args: $*" >&2
+  exit 2
+fi
+python3 - "$3" "__CODEX_HOME__" "__THREAD_ID__" <<'PY'
+import base64
+import hashlib
+import json
+import socket
+import sys
+from urllib.parse import urlparse
+
+url = urlparse(sys.argv[1])
+codex_home = sys.argv[2]
+thread_id = sys.argv[3]
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind((url.hostname, url.port))
+server.listen(1)
+conn, _ = server.accept()
+
+request = b""
+while b"\r\n\r\n" not in request:
+    chunk = conn.recv(1)
+    if not chunk:
+        raise SystemExit("handshake closed")
+    request += chunk
+key = ""
+for line in request.decode().split("\r\n"):
+    if line.lower().startswith("sec-websocket-key:"):
+        key = line.split(":", 1)[1].strip()
+accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+conn.sendall((
+    "HTTP/1.1 101 Switching Protocols\r\n"
+    "Upgrade: websocket\r\n"
+    "Connection: Upgrade\r\n"
+    f"Sec-WebSocket-Accept: {accept}\r\n"
+    "\r\n"
+).encode())
+
+def recv_frame():
+    header = conn.recv(2)
+    if not header:
+        return None
+    length = header[1] & 0x7F
+    masked = header[1] & 0x80
+    if length == 126:
+        length = int.from_bytes(conn.recv(2), "big")
+    elif length == 127:
+        length = int.from_bytes(conn.recv(8), "big")
+    mask = conn.recv(4) if masked else b"\x00\x00\x00\x00"
+    payload = bytearray()
+    while len(payload) < length:
+        chunk = conn.recv(length - len(payload))
+        if not chunk:
+            raise SystemExit("frame closed")
+        payload.extend(chunk)
+    if masked:
+        for index in range(len(payload)):
+            payload[index] ^= mask[index % 4]
+    return json.loads(payload.decode())
+
+def send_frame(value):
+    payload = json.dumps(value, separators=(",", ":")).encode()
+    frame = bytearray([0x81])
+    if len(payload) < 126:
+        frame.append(len(payload))
+    elif len(payload) <= 65535:
+        frame.append(126)
+        frame.extend(len(payload).to_bytes(2, "big"))
+    else:
+        frame.append(127)
+        frame.extend(len(payload).to_bytes(8, "big"))
+    frame.extend(payload)
+    conn.sendall(frame)
+
+init = recv_frame()
+send_frame({"id": init["id"], "result": {"userAgent": "fake-codex-ws/0.0.0", "codexHome": codex_home, "platformFamily": "unix", "platformOs": "macos"}})
+recv_frame()
+thread = recv_frame()
+send_frame({"method": "thread/started", "params": {"thread": {"id": thread_id, "sessionId": thread_id, "preview": "", "status": "running", "cwd": codex_home, "name": None}}})
+send_frame({"id": thread["id"], "result": {"thread": {"id": thread_id, "sessionId": thread_id, "preview": "", "status": "running", "cwd": codex_home, "name": None}, "model": "fake-model", "modelProvider": "fake-provider", "serviceTier": None, "cwd": codex_home}})
+turn = recv_frame()
+send_frame({"id": turn["id"], "result": {"turn": {"id": "turn-ws-1", "status": "running", "startedAt": 0, "completedAt": None, "durationMs": None}}})
+send_frame({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": "turn-ws-1", "status": "running", "startedAt": 0, "completedAt": None, "durationMs": None}}})
+send_frame({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": "turn-ws-1", "itemId": "item-1", "delta": "websocket fake app-server running"}})
+
+interrupt = recv_frame()
+if not interrupt or interrupt.get("method") != "turn/interrupt":
+    raise SystemExit(f"expected turn/interrupt, got {interrupt}")
+send_frame({"id": interrupt["id"], "result": {}})
+send_frame({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": "turn-ws-1", "status": "interrupted", "startedAt": 0, "completedAt": 1, "durationMs": 1}}})
+conn.close()
+server.close()
+PY
+"#
+        .replace("__CODEX_HOME__", &codex_home.to_string_lossy())
+        .replace("__THREAD_ID__", THREAD_ID);
+        fs::write(&codex, script).unwrap();
         let mut permissions = fs::metadata(&codex).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&codex, permissions).unwrap();

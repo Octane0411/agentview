@@ -45,6 +45,7 @@ pub struct RuntimeInitialized {
 pub struct CodexRuntime {
     poll_interval: Duration,
     codex_binary: Option<PathBuf>,
+    listen_url: Option<String>,
 }
 
 #[derive(Debug)]
@@ -59,6 +60,7 @@ impl Default for CodexRuntime {
         Self {
             poll_interval: Duration::from_millis(250),
             codex_binary: None,
+            listen_url: None,
         }
     }
 }
@@ -66,6 +68,11 @@ impl Default for CodexRuntime {
 impl CodexRuntime {
     pub fn with_codex_binary(mut self, codex_binary: impl Into<PathBuf>) -> Self {
         self.codex_binary = Some(codex_binary.into());
+        self
+    }
+
+    pub fn with_listen_url(mut self, listen_url: impl Into<String>) -> Self {
+        self.listen_url = Some(listen_url.into());
         self
     }
 
@@ -157,6 +164,14 @@ impl CodexRuntime {
     }
 
     fn spawn_client(&self) -> Result<AppServerClient> {
+        if let Some(listen_url) = &self.listen_url {
+            if let Some(codex_binary) = &self.codex_binary {
+                let mut command = Command::new(codex_binary);
+                command.args(["app-server", "--listen", listen_url]);
+                return AppServerClient::spawn_websocket_with_command(command, listen_url);
+            }
+            return AppServerClient::spawn_websocket(listen_url);
+        }
         if let Some(codex_binary) = &self.codex_binary {
             let mut command = Command::new(codex_binary);
             command.args(["app-server", "--listen", "stdio://"]);

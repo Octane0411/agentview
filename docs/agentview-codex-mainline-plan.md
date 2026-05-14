@@ -563,10 +563,10 @@ Tasks:
 3. TUI and CLI talk to supervisor over local IPC.
 4. Closing AgentView list does not kill running Codex turns.
 5. Reopening AgentView reconstructs rows from store plus app-server thread state.
-6. Replace private stdio-only supervisor app-server with a connectable loopback
+6. [x] Replace private stdio-only supervisor app-server with a connectable loopback
    websocket endpoint for hosted attach, or expose an equivalent brokered
    app-server connection.
-7. Reserve the loopback port before spawning Codex app-server and record the
+7. [x] Reserve the loopback port before spawning Codex app-server and record the
    resulting `ws://127.0.0.1:<port>` endpoint in supervisor state.
 
 Exit criteria:
@@ -586,10 +586,14 @@ Current checkpoint:
   AgentView worker process.
 - The supervisor starts the Codex app-server turn on a background thread and
   keeps the app-server child under the supervisor process while the turn runs.
-  This is currently implemented with a private stdio child for dispatch; hosted
-  attach still needs the connectable endpoint described above.
-- The supervisor keeps an addressable running-session map for active
-  app-server turns.
+- By default, the supervisor now reserves a loopback port and starts Codex with
+  `codex app-server --listen ws://127.0.0.1:<port>`. The previous stdio
+  transport remains available for tests through `AGENTVIEW_APP_SERVER_TRANSPORT=stdio`.
+- The supervisor keeps an addressable running-session map for active app-server
+  turns, including the command channel and app-server websocket URL.
+- `agentview attach` on a running app-server-backed job queries the supervisor
+  endpoint and passes `--app-server-url ws://127.0.0.1:<port>` to the hosted
+  helper contract instead of falling back to `codex resume`.
 - `agentview stop` on a running app-server-backed job routes through supervisor
   IPC and sends Codex `turn/interrupt` instead of killing the supervisor
   process.
@@ -609,8 +613,8 @@ Tasks:
    dependency shape, build a temporary hosted helper binary from the same patch.
 5. [x] Add a hidden AgentView command that opens an app-server-created thread
    by id through the hosted helper contract.
-6. Pass `--app-server-url`, `--thread-id`, and `--cwd` into the real hosted
-   helper.
+6. [x] Pass `--app-server-url`, `--thread-id`, and `--cwd` into the hosted
+   helper contract.
 7. Render Codex native conversation UI.
 8. Capture Left Arrow as detach when safe.
 9. Return to AgentView list without interrupting the turn.
@@ -625,8 +629,8 @@ Current checkpoint:
   contract and temporary helper invocation shape.
 - Hidden `agentview __hosted-attach <job_id>` resolves an app-server-backed
   job to its Codex thread id and invokes the hosted helper with `--thread-id`
-  and `--cwd`. It still needs the app-server endpoint added to the helper
-  contract.
+  and `--cwd`. When the job is actively running under the supervisor websocket
+  transport, it also invokes the helper with `--app-server-url`.
 - Public `agentview attach <job_id>` and TUI Enter now route app-server-backed
   jobs to the hosted helper contract instead of `codex resume`.
 - Full `cargo test -p codex-tui hosted_detach --lib` still needs a successful
@@ -672,6 +676,10 @@ Current checkpoint:
   showed `thread/start`, `turn/start`, agent message deltas, and
   `turn/completed`. A non-fatal `codex_apps` MCP startup notification was
   observed.
+- Real Codex websocket dispatch smoke was verified on 2026-05-14 with
+  `codex-cli 0.130.0`: default `agentview run` created a supervisor websocket
+  app-server job, recorded `appServerUrl: ws://127.0.0.1:<port>`, reached
+  `completed`, and `peek` returned `AGENTVIEW_WS_E2E_OK`.
 
 Exit criteria:
 

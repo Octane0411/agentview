@@ -1,7 +1,8 @@
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -127,9 +128,9 @@ pub struct RpcError {
 #[derive(Debug)]
 pub struct AppServerClient {
     child: Option<Child>,
-    stdin: Option<ChildStdin>,
+    connection: Option<AppServerConnection>,
     receiver: Receiver<ReaderEvent>,
-    stdout_thread: Option<JoinHandle<()>>,
+    reader_thread: Option<JoinHandle<()>>,
     stderr_thread: Option<JoinHandle<()>>,
     stderr_lines: Arc<Mutex<Vec<String>>>,
     next_id: u64,
@@ -138,11 +139,23 @@ pub struct AppServerClient {
     pending_responses: Vec<ResponseMessage>,
 }
 
+#[derive(Debug)]
+enum AppServerConnection {
+    Stdio(ChildStdin),
+    WebSocket(Arc<Mutex<TcpStream>>),
+}
+
 impl AppServerClient {
     pub fn spawn_stdio() -> Result<Self> {
         let mut command = Command::new("codex");
         command.args(["app-server", "--listen", "stdio://"]);
         Self::spawn_with_command(command)
+    }
+
+    pub fn spawn_websocket(listen_url: &str) -> Result<Self> {
+        let mut command = Command::new("codex");
+        command.args(["app-server", "--listen", listen_url]);
+        Self::spawn_websocket_with_command(command, listen_url)
     }
 
     pub fn spawn_with_command(mut command: Command) -> Result<Self> {
@@ -168,7 +181,7 @@ impl AppServerClient {
             .context("codex app-server stderr was not piped")?;
 
         let (sender, receiver) = mpsc::channel();
-        let stdout_thread = thread::spawn(move || read_stdout(stdout, sender));
+        let reader_thread = thread::spawn(move || read_stdout(stdout, sender));
 
         let stderr_lines = Arc::new(Mutex::new(Vec::new()));
         let stderr_thread = {
@@ -178,9 +191,61 @@ impl AppServerClient {
 
         Ok(Self {
             child: Some(child),
-            stdin: Some(stdin),
+            connection: Some(AppServerConnection::Stdio(stdin)),
             receiver,
-            stdout_thread: Some(stdout_thread),
+            reader_thread: Some(reader_thread),
+            stderr_thread: Some(stderr_thread),
+            stderr_lines,
+            next_id: 0,
+            pending_notifications: Vec::new(),
+            pending_server_requests: Vec::new(),
+            pending_responses: Vec::new(),
+        })
+    }
+
+    pub fn spawn_websocket_with_command(mut command: Command, listen_url: &str) -> Result<Self> {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+
+        let mut child = command
+            .spawn()
+            .context("failed to spawn codex app-server websocket")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("codex app-server stderr was not piped")?;
+
+        let stderr_lines = Arc::new(Mutex::new(Vec::new()));
+        let stderr_thread = {
+            let stderr_lines = Arc::clone(&stderr_lines);
+            thread::spawn(move || read_stderr(stderr, stderr_lines))
+        };
+
+        let stream =
+            match connect_websocket_with_retry(listen_url, Duration::from_secs(5), &stderr_lines) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = stderr_thread.join();
+                    return Err(error);
+                }
+            };
+        let reader_stream = stream
+            .try_clone()
+            .context("failed to clone app-server websocket stream")?;
+        let writer_stream = Arc::new(Mutex::new(stream));
+
+        let (sender, receiver) = mpsc::channel();
+        let reader_thread = thread::spawn(move || read_websocket(reader_stream, sender));
+
+        Ok(Self {
+            child: Some(child),
+            connection: Some(AppServerConnection::WebSocket(writer_stream)),
+            receiver,
+            reader_thread: Some(reader_thread),
             stderr_thread: Some(stderr_thread),
             stderr_lines,
             next_id: 0,
@@ -408,26 +473,40 @@ impl AppServerClient {
     }
 
     fn write_json(&mut self, value: &Value) -> Result<()> {
-        let stdin = self
-            .stdin
+        let connection = self
+            .connection
             .as_mut()
-            .context("codex app-server stdin is closed")?;
-        serde_json::to_writer(&mut *stdin, value).context("failed to write app-server JSON")?;
-        stdin
-            .write_all(b"\n")
-            .context("failed to write app-server newline")?;
-        stdin.flush().context("failed to flush app-server stdin")
+            .context("codex app-server connection is closed")?;
+        match connection {
+            AppServerConnection::Stdio(stdin) => {
+                serde_json::to_writer(&mut *stdin, value)
+                    .context("failed to write app-server JSON")?;
+                stdin
+                    .write_all(b"\n")
+                    .context("failed to write app-server newline")?;
+                stdin.flush().context("failed to flush app-server stdin")
+            }
+            AppServerConnection::WebSocket(stream) => {
+                let payload =
+                    serde_json::to_string(value).context("failed to encode app-server JSON")?;
+                let mut stream = stream
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("app-server websocket stream is poisoned"))?;
+                write_websocket_text(&mut stream, &payload)
+                    .context("failed to write app-server websocket frame")
+            }
+        }
     }
 
     fn terminate_child(&mut self) -> Result<()> {
-        self.stdin.take();
+        self.connection.take();
         if let Some(mut child) = self.child.take() {
             if child.try_wait()?.is_none() {
                 let _ = child.kill();
             }
             let _ = child.wait();
         }
-        if let Some(thread) = self.stdout_thread.take() {
+        if let Some(thread) = self.reader_thread.take() {
             let _ = thread.join();
         }
         if let Some(thread) = self.stderr_thread.take() {
@@ -520,6 +599,42 @@ fn read_stdout(stdout: std::process::ChildStdout, sender: mpsc::Sender<ReaderEve
     }
 }
 
+fn read_websocket(mut stream: TcpStream, sender: mpsc::Sender<ReaderEvent>) {
+    loop {
+        match read_websocket_text(&mut stream) {
+            Ok(Some(text)) => {
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let event = match serde_json::from_str::<Value>(&text) {
+                    Ok(value) => match wire_message_from_value(value) {
+                        Ok(message) => ReaderEvent::Message(message),
+                        Err(error) => ReaderEvent::InvalidLine {
+                            line: text,
+                            error: error.to_string(),
+                        },
+                    },
+                    Err(error) => ReaderEvent::InvalidLine {
+                        line: text,
+                        error: error.to_string(),
+                    },
+                };
+                if sender.send(event).is_err() {
+                    return;
+                }
+            }
+            Ok(None) => {
+                let _ = sender.send(ReaderEvent::Eof);
+                return;
+            }
+            Err(error) => {
+                let _ = sender.send(ReaderEvent::IoError(error.to_string()));
+                return;
+            }
+        }
+    }
+}
+
 fn read_stderr(stderr: std::process::ChildStderr, lines: Arc<Mutex<Vec<String>>>) {
     let reader = BufReader::new(stderr);
     for line in reader.lines().map_while(std::result::Result::ok) {
@@ -565,4 +680,201 @@ fn status_label(status: &Value) -> &str {
         .as_str()
         .or_else(|| status.get("type").and_then(Value::as_str))
         .unwrap_or("unknown")
+}
+
+fn connect_websocket_with_retry(
+    listen_url: &str,
+    timeout: Duration,
+    stderr_lines: &Arc<Mutex<Vec<String>>>,
+) -> Result<TcpStream> {
+    let deadline = Instant::now() + timeout;
+    let mut last_error = None;
+    while Instant::now() < deadline {
+        match connect_websocket_once(listen_url) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => {
+                last_error = Some(error.to_string());
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+
+    let stderr = match stderr_lines.lock() {
+        Ok(lines) => {
+            let start = lines.len().saturating_sub(20);
+            lines[start..].join("\n")
+        }
+        Err(_) => String::new(),
+    };
+    let message = last_error.unwrap_or_else(|| "timed out".to_string());
+    if stderr.is_empty() {
+        bail!("failed to connect app-server websocket {listen_url}: {message}");
+    }
+    bail!("failed to connect app-server websocket {listen_url}: {message}\nstderr:\n{stderr}")
+}
+
+fn connect_websocket_once(listen_url: &str) -> Result<TcpStream> {
+    let target = parse_ws_url(listen_url)?;
+    let mut stream = TcpStream::connect((target.host.as_str(), target.port))
+        .with_context(|| format!("failed to connect TCP socket for {listen_url}"))?;
+    stream
+        .set_nodelay(true)
+        .context("failed to configure app-server websocket socket")?;
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        path = target.path,
+        host = target.host,
+        port = target.port
+    );
+    stream
+        .write_all(request.as_bytes())
+        .context("failed to write websocket handshake")?;
+    stream
+        .flush()
+        .context("failed to flush websocket handshake")?;
+
+    let response = read_http_response_header(&mut stream)?;
+    let status_line = response.lines().next().unwrap_or_default();
+    if !status_line.contains(" 101 ") && !status_line.ends_with(" 101 Switching Protocols") {
+        bail!("websocket handshake failed: {status_line}");
+    }
+    Ok(stream)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WsTarget {
+    host: String,
+    port: u16,
+    path: String,
+}
+
+fn parse_ws_url(url: &str) -> Result<WsTarget> {
+    let rest = url
+        .strip_prefix("ws://")
+        .with_context(|| format!("unsupported app-server websocket URL `{url}`"))?;
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, path)) => (authority, format!("/{path}")),
+        None => (rest, "/".to_string()),
+    };
+    let (host, port) = authority
+        .rsplit_once(':')
+        .with_context(|| format!("websocket URL must include an explicit port: `{url}`"))?;
+    if host.is_empty() {
+        bail!("websocket URL host is empty: `{url}`");
+    }
+    let port = port
+        .parse::<u16>()
+        .with_context(|| format!("invalid websocket URL port in `{url}`"))?;
+    Ok(WsTarget {
+        host: host.trim_matches(['[', ']']).to_string(),
+        port,
+        path,
+    })
+}
+
+fn read_http_response_header(stream: &mut TcpStream) -> Result<String> {
+    let mut bytes = Vec::new();
+    let mut buf = [0_u8; 1];
+    while !bytes.ends_with(b"\r\n\r\n") {
+        let read = stream
+            .read(&mut buf)
+            .context("failed to read websocket handshake")?;
+        if read == 0 {
+            bail!("websocket handshake closed before response headers");
+        }
+        bytes.push(buf[0]);
+        if bytes.len() > 16 * 1024 {
+            bail!("websocket handshake response header is too large");
+        }
+    }
+    String::from_utf8(bytes).context("websocket handshake response is not UTF-8")
+}
+
+fn read_websocket_text(stream: &mut TcpStream) -> Result<Option<String>> {
+    loop {
+        let mut header = [0_u8; 2];
+        match stream.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(error) => return Err(error).context("failed to read websocket frame header"),
+        }
+
+        let opcode = header[0] & 0x0f;
+        let masked = (header[1] & 0x80) != 0;
+        let mut len = u64::from(header[1] & 0x7f);
+        if len == 126 {
+            let mut extended = [0_u8; 2];
+            stream
+                .read_exact(&mut extended)
+                .context("failed to read websocket frame length")?;
+            len = u64::from(u16::from_be_bytes(extended));
+        } else if len == 127 {
+            let mut extended = [0_u8; 8];
+            stream
+                .read_exact(&mut extended)
+                .context("failed to read websocket frame length")?;
+            len = u64::from_be_bytes(extended);
+        }
+        if len > 128 * 1024 * 1024 {
+            bail!("websocket frame is too large: {len} bytes");
+        }
+
+        let mut mask = [0_u8; 4];
+        if masked {
+            stream
+                .read_exact(&mut mask)
+                .context("failed to read websocket frame mask")?;
+        }
+        let mut payload = vec![0_u8; len as usize];
+        stream
+            .read_exact(&mut payload)
+            .context("failed to read websocket frame payload")?;
+        if masked {
+            for (index, byte) in payload.iter_mut().enumerate() {
+                *byte ^= mask[index % 4];
+            }
+        }
+
+        match opcode {
+            0x1 => {
+                return String::from_utf8(payload)
+                    .map(Some)
+                    .context("websocket text frame is not UTF-8");
+            }
+            0x2 => {
+                return String::from_utf8(payload)
+                    .map(Some)
+                    .context("websocket binary frame is not UTF-8");
+            }
+            0x8 => return Ok(None),
+            0x9 | 0xA => continue,
+            _ => continue,
+        }
+    }
+}
+
+fn write_websocket_text(stream: &mut TcpStream, text: &str) -> Result<()> {
+    let payload = text.as_bytes();
+    let mut frame = Vec::with_capacity(payload.len() + 14);
+    frame.push(0x81);
+    if payload.len() < 126 {
+        frame.push(0x80 | payload.len() as u8);
+    } else if payload.len() <= u16::MAX as usize {
+        frame.push(0x80 | 126);
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    } else {
+        frame.push(0x80 | 127);
+        frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    }
+    let mask = [0x12, 0x34, 0x56, 0x78];
+    frame.extend_from_slice(&mask);
+    frame.extend(
+        payload
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ mask[index % 4]),
+    );
+    stream.write_all(&frame)?;
+    stream.flush()?;
+    Ok(())
 }

@@ -2,6 +2,7 @@ use crate::schema::{BlockingRequest, Job, JobBackend, JobStatus, ProcessState};
 use crate::store::{
     append_job_event, get_job, read_job_events, require_job, update_job, write_job_last,
 };
+use crate::supervisor::supervisor_app_server_endpoint;
 use crate::util::{
     command_exists, event_failed, event_needs_input, extract_pr_refs, extract_thread_id, home_dir,
     merge_pr_refs, now_iso, path_exists, strip_ansi, summarize_event, truncate,
@@ -643,10 +644,29 @@ pub fn attach_hosted_codex(job: &Job, no_alt_screen: bool) -> Result<i32> {
             "timestamp": now_iso()
         }),
     )?;
+    let remote_url = supervisor_app_server_endpoint(&job.id)?;
+    if matches!(job.process_state, ProcessState::Alive)
+        && remote_url.as_deref().is_none_or(|url| url == "stdio://")
+    {
+        bail!(
+            "Hosted attach to a running app-server job requires a connectable supervisor app-server endpoint."
+        );
+    }
+    if let Some(remote_url) = remote_url.as_deref().filter(|url| *url != "stdio://") {
+        append_job_event(
+            &job.id,
+            &json!({
+                "type": "hosted_attach_endpoint_resolved",
+                "threadId": thread_id.clone(),
+                "appServerUrl": remote_url,
+                "timestamp": now_iso()
+            }),
+        )?;
+    }
     let config = HostedSessionConfig {
         thread_id: thread_id.clone(),
         cwd: PathBuf::from(&job.cwd),
-        remote_url: None,
+        remote_url: remote_url.filter(|url| url != "stdio://"),
         remote_auth_token: None,
         no_alt_screen,
     };
