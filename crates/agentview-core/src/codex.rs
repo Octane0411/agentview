@@ -768,7 +768,12 @@ pub fn hosted_session_config(job: &Job, no_alt_screen: bool) -> Result<HostedSes
     Ok(config)
 }
 
-fn prepare_hosted_attach(job: &Job, no_alt_screen: bool) -> Result<(String, HostedSessionConfig)> {
+pub fn ensure_hosted_attach_ready(job: &Job) -> Result<()> {
+    let _ = hosted_attach_details(job)?;
+    Ok(())
+}
+
+fn hosted_attach_details(job: &Job) -> Result<(String, Option<String>)> {
     if job.backend != JobBackend::AppServer {
         bail!("Hosted attach requires an app-server-backed Codex job");
     }
@@ -800,6 +805,11 @@ fn prepare_hosted_attach(job: &Job, no_alt_screen: bool) -> Result<(String, Host
         )?;
         bail!("Session is still {message}; try again in a moment.");
     }
+    Ok((thread_id, remote_url))
+}
+
+fn prepare_hosted_attach(job: &Job, no_alt_screen: bool) -> Result<(String, HostedSessionConfig)> {
+    let (thread_id, remote_url) = hosted_attach_details(job)?;
     append_job_event(
         &job.id,
         &json!({

@@ -611,7 +611,7 @@ fn running_app_server_attach_passes_supervisor_websocket_endpoint() {
     let (hosted_helper, hosted_log) = env.fake_hosted_helper();
     let hosted = env
         .agentview_default_transport(&store, &codex)
-        .env("AGENTVIEW_CODEX_HOSTED", hosted_helper)
+        .env("AGENTVIEW_CODEX_HOSTED", &hosted_helper)
         .args(["attach", &job_id])
         .output()
         .unwrap();
@@ -801,13 +801,27 @@ fn running_attach_defers_while_mcp_startup_is_pending() {
     let (hosted_helper, hosted_log) = env.fake_hosted_helper();
     let hosted = env
         .agentview_default_transport(&store, &codex)
-        .env("AGENTVIEW_CODEX_HOSTED", hosted_helper)
+        .env("AGENTVIEW_CODEX_HOSTED", &hosted_helper)
         .args(["attach", &job_id])
         .output()
         .unwrap();
     assert!(!hosted.status.success());
     assert!(
         String::from_utf8_lossy(&hosted.stderr)
+            .contains("Session is still booting MCP server: codex_apps")
+    );
+    assert!(!hosted_log.exists());
+
+    let persistent = env
+        .agentview_default_transport(&store, &codex)
+        .env("AGENTVIEW_CODEX_HOSTED", &hosted_helper)
+        .env("AGENTVIEW_PERSISTENT_CODEX_TUI", "1")
+        .args(["attach", &job_id])
+        .output()
+        .unwrap();
+    assert!(!persistent.status.success());
+    assert!(
+        String::from_utf8_lossy(&persistent.stderr)
             .contains("Session is still booting MCP server: codex_apps")
     );
     assert!(!hosted_log.exists());
@@ -960,6 +974,131 @@ expect {
         let logs_stdout = String::from_utf8_lossy(&logs.stdout);
         logs_stdout.contains("hosted_pty_detached") && logs_stdout.contains("hosted_pty_exited")
     });
+}
+
+#[test]
+fn persistent_hosted_pty_left_arrow_detaches_at_host_layer() {
+    if Command::new("expect").arg("-v").output().is_err() {
+        eprintln!("skipping persistent PTY integration: expect is not installed");
+        return;
+    }
+
+    let env = TestEnv::new();
+    let repo = env.git_repo();
+    let codex = env.fake_codex();
+    let store = TempDir::new().unwrap();
+
+    let job_id = run_app_server_job(
+        &env,
+        &store,
+        &codex,
+        &repo,
+        "complete a fake app-server task before left-arrow attach",
+    );
+    wait_until(Duration::from_secs(5), || {
+        let output = env.agentview(&store, &codex).arg("list").output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains(&job_id) && stdout.contains("completed")
+    });
+
+    let (hosted_helper, hosted_log) = env.fake_short_running_hosted_helper();
+    let expect_script = env.root.path().join("persistent-pty-left.exp");
+    let expect_output = env.root.path().join("persistent-pty-left.out");
+    fs::write(
+        &expect_script,
+        r#"set timeout 15
+match_max 200000
+log_user 0
+log_file -noappend $env(AGENTVIEW_EXPECT_OUTPUT)
+stty rows 42 columns 132
+spawn $env(AGENTVIEW_TEST_BIN) attach $env(AGENTVIEW_TEST_JOB)
+after 1000
+send "\033\[D"
+expect {
+  eof { exit 0 }
+  timeout { exit 11 }
+}
+"#,
+    )
+    .unwrap();
+
+    let fake_bin = codex.parent().unwrap();
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let attach_started = Instant::now();
+    let attach = Command::new("expect")
+        .arg(&expect_script)
+        .env("AGENTVIEW_HOME", store.path())
+        .env("AGENTVIEW_CODEX_HOSTED", hosted_helper)
+        .env("AGENTVIEW_EXPECT_OUTPUT", &expect_output)
+        .env("AGENTVIEW_TEST_BIN", env!("CARGO_BIN_EXE_agentview"))
+        .env("AGENTVIEW_TEST_JOB", &job_id)
+        .env("AGENTVIEW_PERSISTENT_CODEX_TUI", "1")
+        .env("COLUMNS", "132")
+        .env("LINES", "42")
+        .env("NO_COLOR", "1")
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    let attach_elapsed = attach_started.elapsed();
+    assert!(
+        attach.status.success(),
+        "persistent PTY left-arrow attach failed\nstdout:\n{}\nstderr:\n{}\npty:\n{}\nlogs:\n{}\nhost log:\n{}",
+        String::from_utf8_lossy(&attach.stdout),
+        String::from_utf8_lossy(&attach.stderr),
+        fs::read_to_string(&expect_output).unwrap_or_default(),
+        String::from_utf8_lossy(
+            &env.agentview(&store, &codex)
+                .args(["logs", &job_id, "200"])
+                .output()
+                .unwrap()
+                .stdout
+        ),
+        fs::read_to_string(
+            store
+                .path()
+                .join("jobs")
+                .join(&job_id)
+                .join("hosted-pty.log")
+        )
+        .unwrap_or_default()
+    );
+    assert!(
+        attach_elapsed < Duration::from_secs(5),
+        "persistent PTY left-arrow detach was too slow: {attach_elapsed:?}\npty:\n{}\nlogs:\n{}",
+        fs::read_to_string(&expect_output).unwrap_or_default(),
+        String::from_utf8_lossy(
+            &env.agentview(&store, &codex)
+                .args(["logs", &job_id, "200"])
+                .output()
+                .unwrap()
+                .stdout
+        )
+    );
+    assert!(hosted_log.exists());
+
+    wait_until(Duration::from_secs(5), || {
+        let logs = env
+            .agentview(&store, &codex)
+            .args(["logs", &job_id])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&logs.stdout).contains("hosted_pty_detached")
+    });
+
+    let remove = env
+        .agentview(&store, &codex)
+        .args(["rm", "--force", "--purge", &job_id])
+        .output()
+        .unwrap();
+    assert!(
+        remove.status.success(),
+        "{}",
+        String::from_utf8_lossy(&remove.stderr)
+    );
 }
 
 #[test]
@@ -1893,6 +2032,30 @@ set -eu
 printf '%s\n' "$*" > "{}"
 printf 'persistent hosted helper ready\r\n'
 sleep 30
+"#,
+                log.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper, permissions).unwrap();
+        (helper, log)
+    }
+
+    fn fake_short_running_hosted_helper(&self) -> (PathBuf, PathBuf) {
+        let bin = self.root.path().join("short-hosted-bin");
+        fs::create_dir_all(&bin).unwrap();
+        let helper = bin.join("agentview-codex-hosted");
+        let log = self.root.path().join("short-hosted-helper.args");
+        fs::write(
+            &helper,
+            format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" > "{}"
+printf 'persistent hosted helper ready\r\n'
+sleep 2
 "#,
                 log.display()
             ),

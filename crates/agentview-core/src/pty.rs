@@ -1,4 +1,4 @@
-use crate::codex::hosted_session_config;
+use crate::codex::{ensure_hosted_attach_ready, hosted_session_config};
 use crate::schema::Job;
 use crate::store::{append_job_event, job_dir, require_job};
 use crate::util::{now_iso, path_exists};
@@ -166,6 +166,7 @@ fn ensure_hosted_pty_host(job: &Job) -> Result<()> {
     if hosted_pty_ping(&job.id) {
         return Ok(());
     }
+    ensure_hosted_attach_ready(job)?;
     cleanup_stale_host_files(&job.id);
 
     let log_path = hosted_pty_log_path(&job.id);
@@ -204,7 +205,7 @@ fn ensure_hosted_pty_host(job: &Job) -> Result<()> {
     )?;
 
     let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(5) {
+    while started.elapsed() < Duration::from_secs(30) {
         if hosted_pty_ping(&job.id) {
             return Ok(());
         }
@@ -248,7 +249,7 @@ fn accept_clients(
     slave_path: &Path,
     master_fd: RawFd,
     child: &mut Child,
-    shared: &SharedState,
+    shared: &Arc<SharedState>,
 ) -> Result<()> {
     loop {
         if let Some(status) = child.try_wait()? {
@@ -278,7 +279,7 @@ fn handle_client(
     slave_path: &Path,
     master_fd: RawFd,
     child: &mut Child,
-    shared: &SharedState,
+    shared: &Arc<SharedState>,
 ) -> Result<()> {
     let mut reader = BufReader::new(stream);
     let mut header = String::new();
@@ -317,7 +318,6 @@ fn handle_client(
             .unwrap_or(80),
     };
     set_pty_size_path(slave_path, size)?;
-    signal_window_change(child.id());
 
     {
         let buffer = shared.buffer.lock().expect("buffer lock poisoned");
@@ -335,6 +335,7 @@ fn handle_client(
         }
         client.stream = Some(client_writer);
     }
+    signal_window_change(child.id());
     append_job_event(
         job_id,
         &json!({
@@ -348,19 +349,35 @@ fn handle_client(
         return Err(std::io::Error::last_os_error()).context("failed to clone PTY master");
     }
     let mut master = unsafe { File::from_raw_fd(master_dup) };
+    let input_shared = Arc::clone(shared);
+    let input_job_id = job_id.to_string();
     std::thread::spawn(move || {
         let mut input = stream;
+        let mut filter = InputDetachFilter::default();
         let mut buf = [0_u8; 4096];
         loop {
             match input.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) => {
+                    detach_client(&input_job_id, input_shared.as_ref());
+                    break;
+                }
                 Ok(n) => {
-                    if master.write_all(&buf[..n]).is_err() {
+                    let filtered = filter.push(&buf[..n]);
+                    if !filtered.output.is_empty() && master.write_all(&filtered.output).is_err() {
                         break;
                     }
-                    let _ = master.flush();
+                    if !filtered.output.is_empty() {
+                        let _ = master.flush();
+                    }
+                    if filtered.detach {
+                        detach_client(&input_job_id, input_shared.as_ref());
+                        break;
+                    }
                 }
-                Err(_) => break,
+                Err(_) => {
+                    detach_client(&input_job_id, input_shared.as_ref());
+                    break;
+                }
             }
         }
     });
@@ -436,6 +453,11 @@ struct FilteredOutput {
     detach: bool,
 }
 
+#[derive(Default)]
+struct InputDetachFilter {
+    pending: Vec<u8>,
+}
+
 impl DetachFilter {
     fn push(&mut self, bytes: &[u8]) -> FilteredOutput {
         self.pending.extend_from_slice(bytes);
@@ -459,10 +481,92 @@ impl DetachFilter {
     }
 }
 
+impl InputDetachFilter {
+    fn push(&mut self, bytes: &[u8]) -> FilteredOutput {
+        self.pending.extend_from_slice(bytes);
+        let mut output = Vec::new();
+        let mut detach = false;
+
+        while let Some((index, len)) = find_input_detach_sequence(&self.pending) {
+            output.extend_from_slice(&self.pending[..index]);
+            self.pending.drain(..index + len);
+            detach = true;
+        }
+
+        let keep = input_detach_prefix_suffix_len(&self.pending);
+        if self.pending.len() > keep {
+            let emit = self.pending.len() - keep;
+            output.extend_from_slice(&self.pending[..emit]);
+            self.pending.drain(..emit);
+        }
+
+        FilteredOutput { output, detach }
+    }
+}
+
+fn find_input_detach_sequence(bytes: &[u8]) -> Option<(usize, usize)> {
+    let left_arrow = find_left_arrow_sequence(bytes);
+    let marker =
+        find_subsequence(bytes, DETACH_SEQUENCE).map(|index| (index, DETACH_SEQUENCE.len()));
+
+    match (left_arrow, marker) {
+        (Some(left), Some(marker)) if marker.0 < left.0 => Some(marker),
+        (Some(left), _) => Some(left),
+        (None, marker) => marker,
+    }
+}
+
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+fn find_left_arrow_sequence(bytes: &[u8]) -> Option<(usize, usize)> {
+    for index in 0..bytes.len() {
+        let rest = &bytes[index..];
+        if rest.starts_with(b"\x1bOD") {
+            return Some((index, 3));
+        }
+        if rest.starts_with(b"\x1b[") {
+            for end in 2..rest.len() {
+                let byte = rest[end];
+                if byte == b'D'
+                    && rest[2..end]
+                        .iter()
+                        .all(|part| part.is_ascii_digit() || *part == b';')
+                {
+                    return Some((index, end + 1));
+                }
+                if !byte.is_ascii_digit() && byte != b';' {
+                    break;
+                }
+            }
+        }
+    }
+    None
+}
+
+fn left_arrow_prefix_suffix_len(bytes: &[u8]) -> usize {
+    let max = bytes.len().min(32);
+    (1..=max)
+        .rev()
+        .find(|len| is_left_arrow_prefix(&bytes[bytes.len() - len..]))
+        .unwrap_or(0)
+}
+
+fn is_left_arrow_prefix(bytes: &[u8]) -> bool {
+    if bytes == b"\x1b" || bytes == b"\x1bO" {
+        return true;
+    }
+    bytes.starts_with(b"\x1b[")
+        && bytes[2..]
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || *byte == b';')
+}
+
+fn input_detach_prefix_suffix_len(bytes: &[u8]) -> usize {
+    left_arrow_prefix_suffix_len(bytes).max(detach_prefix_suffix_len(bytes))
 }
 
 fn detach_prefix_suffix_len(bytes: &[u8]) -> usize {
@@ -477,6 +581,7 @@ fn relay_terminal(mut stream: UnixStream) -> Result<()> {
     let stdin_fd = std::io::stdin().as_raw_fd();
     let socket_fd = stream.as_raw_fd();
     let mut stdout = std::io::stdout();
+    let mut input_filter = InputDetachFilter::default();
     let mut stdin_buf = [0_u8; 4096];
     let mut socket_buf = [0_u8; 8192];
 
@@ -523,8 +628,16 @@ fn relay_terminal(mut stream: UnixStream) -> Result<()> {
             if n <= 0 {
                 break;
             }
-            stream.write_all(&stdin_buf[..n as usize])?;
-            stream.flush()?;
+            let filtered = input_filter.push(&stdin_buf[..n as usize]);
+            if !filtered.output.is_empty() {
+                stream.write_all(&filtered.output)?;
+                stream.flush()?;
+            }
+            if filtered.detach {
+                stream.write_all(DETACH_SEQUENCE)?;
+                stream.flush()?;
+                break;
+            }
         }
     }
     Ok(())
@@ -763,5 +876,49 @@ mod tests {
         assert!(second.detach);
         assert_eq!(second.output, b"after");
         assert!(filter.push(b"").output.is_empty());
+    }
+
+    #[test]
+    fn left_arrow_sequences_are_host_detach_shortcuts() {
+        for sequence in [b"\x1b[D".as_slice(), b"\x1bOD", b"\x1b[1D", b"\x1b[1;1D"] {
+            let mut filter = InputDetachFilter::default();
+            let output = filter.push(sequence);
+
+            assert!(output.detach, "sequence should detach: {sequence:?}");
+            assert!(output.output.is_empty());
+        }
+    }
+
+    #[test]
+    fn left_arrow_filter_handles_split_sequences() {
+        let mut filter = InputDetachFilter::default();
+        let first = filter.push(b"\x1b");
+        assert!(!first.detach);
+        assert!(first.output.is_empty());
+
+        let second = filter.push(b"[D");
+        assert!(second.detach);
+        assert!(second.output.is_empty());
+    }
+
+    #[test]
+    fn input_detach_filter_handles_split_marker_sequences() {
+        let mut filter = InputDetachFilter::default();
+        let first = filter.push(b"before\x1b]777;agent");
+        assert!(!first.detach);
+        assert_eq!(first.output, b"before");
+
+        let second = filter.push(b"view-detach\x07after");
+        assert!(second.detach);
+        assert_eq!(second.output, b"after");
+    }
+
+    #[test]
+    fn left_arrow_filter_passes_other_input_through() {
+        let mut filter = InputDetachFilter::default();
+        let output = filter.push(b"x\x1b[C");
+
+        assert!(!output.detach);
+        assert_eq!(output.output, b"x\x1b[C");
     }
 }
