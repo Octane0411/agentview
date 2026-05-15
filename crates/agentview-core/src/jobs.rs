@@ -289,6 +289,10 @@ pub fn remove_job(job_id: &str, options: RemoveOptions) -> Result<()> {
     if job.pid.is_some() {
         stop_job(job_id)?;
     }
+    #[cfg(unix)]
+    if job.backend == JobBackend::AppServer {
+        crate::pty::stop_hosted_pty(job_id)?;
+    }
     if worktree_has_changes(job.worktree_path.as_deref())? && !options.force {
         bail!(
             "Worktree has uncommitted changes; refusing to remove {}. Use --force to override.",

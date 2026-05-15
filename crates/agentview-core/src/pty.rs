@@ -21,6 +21,7 @@ const DETACH_SEQUENCE: &[u8] = b"\x1b]777;agentview-detach\x07";
 const BUFFER_LIMIT: usize = 96 * 1024;
 const ATTACH_HEADER_PREFIX: &str = "AGENTVIEW_PTY_ATTACH ";
 const PING_HEADER: &str = "AGENTVIEW_PTY_PING";
+const STOP_HEADER: &str = "AGENTVIEW_PTY_STOP";
 
 #[derive(Debug, Clone, Copy)]
 struct TerminalSize {
@@ -77,6 +78,36 @@ pub fn attach_hosted_pty(job: &Job, no_alt_screen: bool) -> Result<i32> {
     status.map(|()| 0)
 }
 
+pub fn stop_hosted_pty(job_id: &str) -> Result<()> {
+    let host_pid = read_pid(hosted_pty_pid_path(job_id));
+    let child_pid = read_pid(hosted_pty_child_pid_path(job_id));
+    let mut stopped_via_socket = false;
+
+    if let Ok(mut stream) = UnixStream::connect(hosted_pty_socket_path(job_id)) {
+        let _ = stream.write_all(format!("{STOP_HEADER}\n").as_bytes());
+        let _ = stream.flush();
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+        let mut line = String::new();
+        stopped_via_socket = BufReader::new(stream)
+            .read_line(&mut line)
+            .map(|_| line.trim() == "OK")
+            .unwrap_or(false);
+    }
+
+    if !stopped_via_socket && let Some(pid) = child_pid {
+        terminate_process(pid);
+    }
+    if let Some(pid) = host_pid {
+        if !wait_for_process_exit(pid, Duration::from_millis(800)) {
+            terminate_process(pid);
+        }
+    }
+    cleanup_stale_host_files(job_id);
+    let _ = fs::remove_file(hosted_pty_pid_path(job_id));
+    let _ = fs::remove_file(hosted_pty_child_pid_path(job_id));
+    Ok(())
+}
+
 pub fn hosted_pty_host_main(job_id: &str) -> Result<()> {
     let job = require_job(job_id)?;
     let socket_path = hosted_pty_socket_path(job_id);
@@ -93,6 +124,7 @@ pub fn hosted_pty_host_main(job_id: &str) -> Result<()> {
     let size = TerminalSize::default();
     set_pty_size_path(&pty.slave_path, size)?;
     let mut child = spawn_hosted_helper_in_pty(&job, &pty.slave_path)?;
+    fs::write(hosted_pty_child_pid_path(job_id), child.id().to_string())?;
     append_job_event(
         job_id,
         &json!({
@@ -126,6 +158,7 @@ pub fn hosted_pty_host_main(job_id: &str) -> Result<()> {
     let _ = reader_thread.join();
     let _ = fs::remove_file(&socket_path);
     let _ = fs::remove_file(&pid_path);
+    let _ = fs::remove_file(hosted_pty_child_pid_path(job_id));
     result
 }
 
@@ -244,7 +277,7 @@ fn handle_client(
     stream: UnixStream,
     slave_path: &Path,
     master_fd: RawFd,
-    child: &Child,
+    child: &mut Child,
     shared: &SharedState,
 ) -> Result<()> {
     let mut reader = BufReader::new(stream);
@@ -253,6 +286,19 @@ fn handle_client(
     let mut stream = reader.into_inner();
     let header = header.trim();
     if header == PING_HEADER {
+        stream.write_all(b"OK\n")?;
+        return Ok(());
+    }
+    if header == STOP_HEADER {
+        append_job_event(
+            job_id,
+            &json!({
+                "type": "hosted_pty_stop_requested",
+                "timestamp": now_iso()
+            }),
+        )?;
+        let _ = child.kill();
+        let _ = child.wait();
         stream.write_all(b"OK\n")?;
         return Ok(());
     }
@@ -619,6 +665,38 @@ fn signal_window_change(pid: u32) {
     let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGWINCH) };
 }
 
+fn terminate_process(pid: u32) {
+    if !process_alive(pid) {
+        return;
+    }
+    let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    if wait_for_process_exit(pid, Duration::from_millis(800)) {
+        return;
+    }
+    let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    let _ = wait_for_process_exit(pid, Duration::from_millis(800));
+}
+
+fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if !process_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    !process_alive(pid)
+}
+
+fn process_alive(pid: u32) -> bool {
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+fn read_pid(path: PathBuf) -> Option<u32> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
 fn bind_fresh_socket(path: &Path) -> Result<()> {
     if path_exists(path) {
         match UnixStream::connect(path) {
@@ -643,6 +721,10 @@ fn hosted_pty_socket_path(job_id: &str) -> PathBuf {
 
 fn hosted_pty_pid_path(job_id: &str) -> PathBuf {
     job_dir(job_id).join("hosted-pty.pid")
+}
+
+fn hosted_pty_child_pid_path(job_id: &str) -> PathBuf {
+    job_dir(job_id).join("hosted-pty-child.pid")
 }
 
 fn hosted_pty_log_path(job_id: &str) -> PathBuf {

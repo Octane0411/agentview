@@ -963,6 +963,89 @@ expect {
 }
 
 #[test]
+fn remove_purges_persistent_hosted_pty_processes() {
+    let env = TestEnv::new();
+    let repo = env.git_repo();
+    let codex = env.fake_codex();
+    let store = TempDir::new().unwrap();
+
+    let (hosted_helper, hosted_log) = env.fake_long_running_hosted_helper();
+    let output = env
+        .agentview(&store, &codex)
+        .env("AGENTVIEW_CODEX_HOSTED", &hosted_helper)
+        .env("AGENTVIEW_PERSISTENT_CODEX_TUI", "1")
+        .args([
+            "run",
+            "--cwd",
+            repo.to_str().unwrap(),
+            "complete a fake app-server task before purge",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let job_id = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("backgrounded"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("job id in run output")
+        .to_string();
+
+    let job_dir = store.path().join("jobs").join(&job_id);
+    let host_pid_path = job_dir.join("hosted-pty.pid");
+    let child_pid_path = job_dir.join("hosted-pty-child.pid");
+    wait_until(Duration::from_secs(5), || {
+        let output = env.agentview(&store, &codex).arg("list").output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains(&job_id) && stdout.contains("completed")
+    });
+
+    let mut host = env
+        .agentview(&store, &codex)
+        .env("AGENTVIEW_CODEX_HOSTED", &hosted_helper)
+        .args(["__hosted-pty-host", &job_id])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    wait_until(Duration::from_secs(5), || {
+        hosted_log.exists() && host_pid_path.exists() && child_pid_path.exists()
+    });
+
+    let host_pid = read_pid(&host_pid_path);
+    let child_pid = read_pid(&child_pid_path);
+    assert!(
+        process_alive(host_pid),
+        "host pid {host_pid} should be alive"
+    );
+    assert!(
+        process_alive(child_pid),
+        "child pid {child_pid} should be alive"
+    );
+
+    let remove = env
+        .agentview(&store, &codex)
+        .args(["rm", "--force", "--purge", &job_id])
+        .output()
+        .unwrap();
+    assert!(
+        remove.status.success(),
+        "{}",
+        String::from_utf8_lossy(&remove.stderr)
+    );
+
+    let _ = host.wait();
+    wait_until(Duration::from_secs(5), || {
+        !process_alive(host_pid) && !process_alive(child_pid)
+    });
+    assert!(!job_dir.exists());
+}
+
+#[test]
 fn tui_enter_on_needs_input_job_uses_hosted_endpoint_and_can_still_reply() {
     if Command::new("expect").arg("-v").output().is_err() {
         eprintln!("skipping TUI PTY integration: expect is not installed");
@@ -1796,6 +1879,30 @@ exit 0
         fs::set_permissions(&helper, permissions).unwrap();
         (helper, log)
     }
+
+    fn fake_long_running_hosted_helper(&self) -> (PathBuf, PathBuf) {
+        let bin = self.root.path().join("long-hosted-bin");
+        fs::create_dir_all(&bin).unwrap();
+        let helper = bin.join("agentview-codex-hosted");
+        let log = self.root.path().join("long-hosted-helper.args");
+        fs::write(
+            &helper,
+            format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" > "{}"
+printf 'persistent hosted helper ready\r\n'
+sleep 30
+"#,
+                log.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper, permissions).unwrap();
+        (helper, log)
+    }
 }
 
 fn run(command: &str, args: &[&str], cwd: &Path) {
@@ -1848,4 +1955,21 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
         thread::sleep(Duration::from_millis(100));
     }
     panic!("condition was not met within {:?}", timeout);
+}
+
+fn read_pid(path: &Path) -> u32 {
+    fs::read_to_string(path).unwrap().trim().parse().unwrap()
+}
+
+fn process_alive(pid: u32) -> bool {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "stat="])
+        .output()
+        .unwrap();
+    if !output.status.success() {
+        return false;
+    }
+    let state = String::from_utf8_lossy(&output.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
 }

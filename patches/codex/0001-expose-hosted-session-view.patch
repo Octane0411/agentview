@@ -87,14 +87,12 @@ index 905f62f86f..e3a6ec0da4 100644
          if self.overlay.is_none()
              && self.chat_widget.no_modal_or_popup_active()
              // Alt+Left/Right are also natural word-motion keys in the composer. Keep agent
-@@ -261,14 +267,47 @@ impl App {
+@@ -261,14 +267,45 @@ impl App {
          self.overlay.is_none() && self.chat_widget.no_modal_or_popup_active()
      }
  
 +    fn should_host_detach(&self, key_event: KeyEvent) -> bool {
 +        self.hosted_detach_enabled
-+            && self.overlay.is_none()
-+            && self.chat_widget.no_modal_or_popup_active()
 +            && self.chat_widget.composer_is_empty()
 +            && hosted_detach_shortcut_matches(key_event)
 +    }
@@ -163,7 +161,7 @@ index 905f62f86f..e3a6ec0da4 100644
 +    }
 +
 +    #[tokio::test]
-+    async fn hosted_detach_requires_enabled_empty_composer_and_no_popup() {
++    async fn hosted_detach_requires_enabled_empty_composer() {
 +        let key = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
 +        let mut app = make_test_app().await;
 +
