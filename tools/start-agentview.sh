@@ -9,7 +9,6 @@ BUILD=1
 CLEAN=1
 INSTALL=0
 BIN_DIR="${BIN_DIR:-/opt/homebrew/bin}"
-AGENTVIEW_ARGS=()
 
 usage() {
   cat >&2 <<'EOF'
@@ -60,11 +59,9 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --)
       shift
-      AGENTVIEW_ARGS=("$@")
       break
       ;;
     *)
-      AGENTVIEW_ARGS=("$@")
       break
       ;;
   esac
@@ -73,7 +70,11 @@ done
 process_alive() {
   local pid="$1"
   [[ -n "$pid" ]] || return 1
-  kill -0 "$pid" >/dev/null 2>&1
+  local state
+  state="$(ps -p "$pid" -o stat= 2>/dev/null || true)"
+  state="${state#"${state%%[![:space:]]*}"}"
+  state="${state%"${state##*[![:space:]]}"}"
+  [[ -n "$state" && "$state" != Z* ]]
 }
 
 process_command() {
@@ -149,4 +150,4 @@ echo "hosted helper: $AGENTVIEW_CODEX_HOSTED" >&2
 echo "state: $AGENTVIEW_HOME" >&2
 "$AGENTVIEW_BIN" doctor >&2
 
-exec "$AGENTVIEW_BIN" "${AGENTVIEW_ARGS[@]}"
+exec "$AGENTVIEW_BIN" "$@"
