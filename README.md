@@ -25,6 +25,17 @@ Run the TUI:
 agentview
 ```
 
+For local acceptance, prefer the repo startup script:
+
+```bash
+tools/start-agentview.sh
+```
+
+It builds the debug binaries, removes stale hosted-PTY pid/socket files,
+runs `doctor`, and starts `target/debug/agentview` with the matching hosted
+helper. It does not replace the globally installed binary unless `--install`
+is passed.
+
 Dispatch a job:
 
 ```bash
