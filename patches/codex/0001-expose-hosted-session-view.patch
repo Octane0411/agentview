@@ -74,18 +74,20 @@ diff --git a/codex-rs/tui/src/app/input.rs b/codex-rs/tui/src/app/input.rs
 index 905f62f86f..e3a6ec0da4 100644
 --- a/codex-rs/tui/src/app/input.rs
 +++ b/codex-rs/tui/src/app/input.rs
-@@ -100,6 +100,10 @@ impl App {
+@@ -100,6 +100,12 @@ impl App {
          // editing behavior for moving across words inside a draft.
          let allow_agent_word_motion_fallback = !self.enhanced_keys_supported
              && self.chat_widget.composer_text_with_pending().is_empty();
 +        if self.should_host_detach(key_event) {
-+            self.app_event_tx.send(AppEvent::Exit(ExitMode::Detach));
++            if !emit_host_detach_sequence() {
++                self.app_event_tx.send(AppEvent::Exit(ExitMode::Detach));
++            }
 +            return;
 +        }
          if self.overlay.is_none()
              && self.chat_widget.no_modal_or_popup_active()
              // Alt+Left/Right are also natural word-motion keys in the composer. Keep agent
-@@ -261,14 +265,35 @@ impl App {
+@@ -261,14 +267,47 @@ impl App {
          self.overlay.is_none() && self.chat_widget.no_modal_or_popup_active()
      }
  
@@ -114,6 +116,18 @@ index 905f62f86f..e3a6ec0da4 100644
 +    )
 +}
 +
++fn emit_host_detach_sequence() -> bool {
++    let Ok(sequence) = std::env::var("AGENTVIEW_HOST_DETACH_SEQUENCE") else {
++        return false;
++    };
++    use std::io::Write as _;
++    let mut stdout = std::io::stdout();
++    stdout
++        .write_all(sequence.as_bytes())
++        .and_then(|_| stdout.flush())
++        .is_ok()
++}
++
  #[cfg(test)]
  mod tests {
      use super::super::test_support::make_test_app;
@@ -121,7 +135,7 @@ index 905f62f86f..e3a6ec0da4 100644
  
      #[tokio::test]
      async fn app_keymap_shortcuts_are_disabled_while_keymap_view_is_active() {
-@@ -280,4 +305,40 @@ mod tests {
+@@ -280,4 +319,40 @@ mod tests {
  
          assert!(!app.app_keymap_shortcuts_available());
      }

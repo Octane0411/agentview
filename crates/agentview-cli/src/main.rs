@@ -67,6 +67,9 @@ enum Commands {
         no_alt_screen: bool,
         job_id: String,
     },
+    #[cfg(unix)]
+    #[command(hide = true, name = "__hosted-pty-host")]
+    HostedPtyHost { job_id: String },
     #[command(about = "Send a follow-up turn")]
     Reply {
         job_id: String,
@@ -168,6 +171,10 @@ fn run() -> Result<()> {
             no_alt_screen,
             job_id,
         }) => cmd_hosted_attach(&job_id, no_alt_screen),
+        #[cfg(unix)]
+        Some(Commands::HostedPtyHost { job_id }) => {
+            agentview_core::pty::hosted_pty_host_main(&job_id)
+        }
         Some(Commands::Reply { job_id, message }) => cmd_reply(&job_id, &message.join(" ")),
         Some(Commands::Approve { job_id }) => cmd_decision(&job_id, "approved"),
         Some(Commands::Decline { job_id }) => cmd_decision(&job_id, "declined"),

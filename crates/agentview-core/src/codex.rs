@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use crate::pty::{attach_hosted_pty, persistent_tui_enabled, prewarm_hosted_pty};
 use crate::schema::{BlockingRequest, Job, JobBackend, JobStatus, ProcessState};
 use crate::store::{
     append_job_event, get_job, read_job_events, require_job, update_job, write_job_last,
@@ -385,6 +387,8 @@ fn handle_app_server_notification(
                     job.codex_thread_id = Some(thread_id.to_string());
                     Ok(())
                 })?;
+                #[cfg(unix)]
+                prewarm_hosted_pty_if_enabled(job_id);
             }
         }
         "turn/started" => {
@@ -486,6 +490,27 @@ fn handle_app_server_notification(
     }
 
     Ok(false)
+}
+
+#[cfg(unix)]
+fn prewarm_hosted_pty_if_enabled(job_id: &str) {
+    if !persistent_tui_enabled() {
+        return;
+    }
+    let job_id = job_id.to_string();
+    thread::spawn(move || {
+        let result = require_job(&job_id).and_then(|job| prewarm_hosted_pty(&job));
+        if let Err(error) = result {
+            let _ = append_job_event(
+                &job_id,
+                &json!({
+                    "type": "hosted_pty_prewarm_failed",
+                    "error": error.to_string(),
+                    "timestamp": now_iso()
+                }),
+            );
+        }
+    });
 }
 
 fn handle_app_server_request(job_id: &str, request: ServerRequest) -> Result<()> {
@@ -678,6 +703,10 @@ pub fn find_recent_codex_session_id(job: &Job) -> Result<Option<String>> {
 
 pub fn attach_codex(job: &Job) -> Result<i32> {
     if job.backend == JobBackend::AppServer {
+        #[cfg(unix)]
+        if persistent_tui_enabled() {
+            return attach_hosted_pty(job, false);
+        }
         return attach_hosted_codex(job, false);
     }
     assert_codex_available()?;
@@ -706,6 +735,40 @@ pub fn attach_codex(job: &Job) -> Result<i32> {
 }
 
 pub fn attach_hosted_codex(job: &Job, no_alt_screen: bool) -> Result<i32> {
+    let (thread_id, config) = prepare_hosted_attach(job, no_alt_screen)?;
+    match HostedHelper::from_env_or_default().run(&config)? {
+        HostedSessionExit::Detached => {
+            append_job_event(
+                &job.id,
+                &json!({
+                    "type": "hosted_attach_detached",
+                    "threadId": thread_id,
+                    "timestamp": now_iso()
+                }),
+            )?;
+            Ok(0)
+        }
+        HostedSessionExit::Quit(code) => {
+            append_job_event(
+                &job.id,
+                &json!({
+                    "type": "hosted_attach_quit",
+                    "threadId": thread_id,
+                    "exitCode": code,
+                    "timestamp": now_iso()
+                }),
+            )?;
+            Ok(code)
+        }
+    }
+}
+
+pub fn hosted_session_config(job: &Job, no_alt_screen: bool) -> Result<HostedSessionConfig> {
+    let (_, config) = prepare_hosted_attach(job, no_alt_screen)?;
+    Ok(config)
+}
+
+fn prepare_hosted_attach(job: &Job, no_alt_screen: bool) -> Result<(String, HostedSessionConfig)> {
     if job.backend != JobBackend::AppServer {
         bail!("Hosted attach requires an app-server-backed Codex job");
     }
@@ -763,31 +826,7 @@ pub fn attach_hosted_codex(job: &Job, no_alt_screen: bool) -> Result<i32> {
         remote_auth_token: None,
         no_alt_screen,
     };
-    match HostedHelper::from_env_or_default().run(&config)? {
-        HostedSessionExit::Detached => {
-            append_job_event(
-                &job.id,
-                &json!({
-                    "type": "hosted_attach_detached",
-                    "threadId": thread_id,
-                    "timestamp": now_iso()
-                }),
-            )?;
-            Ok(0)
-        }
-        HostedSessionExit::Quit(code) => {
-            append_job_event(
-                &job.id,
-                &json!({
-                    "type": "hosted_attach_quit",
-                    "threadId": thread_id,
-                    "exitCode": code,
-                    "timestamp": now_iso()
-                }),
-            )?;
-            Ok(code)
-        }
-    }
+    Ok((thread_id, config))
 }
 
 fn pending_mcp_startup_message(job_id: &str) -> Result<Option<String>> {

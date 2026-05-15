@@ -1,5 +1,7 @@
 pub mod codex;
 pub mod jobs;
+#[cfg(unix)]
+pub mod pty;
 pub mod schema;
 pub mod store;
 pub mod supervisor;
